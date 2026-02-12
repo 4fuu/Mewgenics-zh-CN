@@ -1,0 +1,22 @@
+{
+  "mutation": "变异",
+  "passive": "被动技能",
+  "ability": "技能",
+  "item": "物品",
+  "furniture": "家具",
+  "weather": "天气",
+  "keyword": "关键词",
+  "cutscene": "过场动画",
+  "progression": "进度",
+  "HP": "生命值",
+  "damage": "伤害",
+  "attack": "攻击",
+  "defense": "防御",
+  "speed": "速度",
+  "range": "范围",
+  "cooldown": "冷却",
+  "turn": "回合",
+  "tile": "格子",
+  "cat": "猫咪",
+  "kitten": "小猫"
+}

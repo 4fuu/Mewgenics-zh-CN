@@ -1,0 +1,15 @@
+__pycache__/
+*.py[oc]
+build/
+wheels/
+*.egg-info
+.venv
+
+extracted/
+resources.gpak*
+resources_patched.gpak
+steam_api64.dll
+*.exe
+*.bak
+
+term_candidates.json
