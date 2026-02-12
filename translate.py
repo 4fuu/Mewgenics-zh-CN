@@ -13,7 +13,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
-from ai import completion
+
 
 TEXT_DIR = "extracted/data/text"
 PROGRESS_FILE = "translation_progress.json"
@@ -161,6 +161,8 @@ def parse_response(response: str, expected_count: int) -> list[str]:
 
 
 def translate_batch(entries: list[dict]) -> list[str]:
+    from ai import completion
+
     glossary = load_glossary()
     prompt = build_prompt(entries, glossary)
 
@@ -254,7 +256,10 @@ def collect_entries(
 
 
 def run_translate(
-    batch_size: int = 50, files: list[str] | None = None, dry_run: bool = False
+    batch_size: int = 50,
+    files: list[str] | None = None,
+    dry_run: bool = False,
+    apply_only: bool = False,
 ):
     """Main translation loop.
 
@@ -262,6 +267,8 @@ def run_translate(
         batch_size: Number of entries per translate_batch() call.
         files: List of CSV filenames to translate. None = all files.
         dry_run: If True, only show stats without translating.
+        apply_only: If True, only apply existing translations from progress
+            file to CSVs without calling AI.
     """
     if not os.path.exists(TEXT_DIR):
         print(f"Error: {TEXT_DIR} not found. Run 'extract' or 'extract-text' first.")
@@ -312,7 +319,9 @@ def run_translate(
         bar = "█" * filled + "░" * (bar_len - filled)
         print(f"  {csv_file:30s} {bar} {done:5d}/{translatable:<5d} ({pct:5.1f}%)")
 
-    if dry_run:
+    if dry_run or apply_only:
+        if apply_only:
+            print(f"\nApply-only mode: wrote existing translations to CSV files.")
         return
 
     if total_pending == 0:

@@ -6,10 +6,10 @@ and rebuilds unicodefont.swf with the new font while preserving the SWF
 structure and font identity (ID + name) so the game continues to use it.
 
 Usage:
-  uv run python replace_unicode_font.py                    # replace font
-  uv run python replace_unicode_font.py --restore          # restore from backup
-  uv run python replace_unicode_font.py --dry              # show what would happen
-  uv run python replace_unicode_font.py --font other.ttf   # use a different TTF
+  uv run replace_unicode_font.py                    # replace font
+  uv run replace_unicode_font.py --restore          # restore from backup
+  uv run replace_unicode_font.py --dry              # show what would happen
+  uv run replace_unicode_font.py --font other.ttf   # use a different TTF
 """
 
 import struct
@@ -227,19 +227,20 @@ def ttf_contours_to_swf(glyph, glyf_table, scale):
                 off = expanded[i + 1]
                 if i + 2 < len(expanded):
                     on = expanded[i + 2]
-                    segments.append(
-                        ((cur[0], cur[1]), (off[0], off[1]), (on[0], on[1]), "curve")
-                    )
+                    segments.append((
+                        (cur[0], cur[1]),
+                        (off[0], off[1]),
+                        (on[0], on[1]),
+                        "curve",
+                    ))
                     i += 2
                 else:
-                    segments.append(
-                        (
-                            (cur[0], cur[1]),
-                            (off[0], off[1]),
-                            first_point,
-                            "curve",
-                        )
-                    )
+                    segments.append((
+                        (cur[0], cur[1]),
+                        (off[0], off[1]),
+                        first_point,
+                        "curve",
+                    ))
                     i += 2
             elif i + 1 < len(expanded):
                 nxt = expanded[i + 1]
@@ -251,7 +252,9 @@ def ttf_contours_to_swf(glyph, glyf_table, scale):
                 i += 1
 
         if segments:
-            last_end = segments[-1][2] if segments[-1][-1] == "curve" else segments[-1][1]
+            last_end = (
+                segments[-1][2] if segments[-1][-1] == "curve" else segments[-1][1]
+            )
             if last_end != first_point:
                 segments.append((last_end, first_point, "line"))
 
@@ -260,7 +263,9 @@ def ttf_contours_to_swf(glyph, glyf_table, scale):
     return contours
 
 
-def build_define_font3(font_id, font_name_bytes, codes, shapes_data, advances, ascent, descent):
+def build_define_font3(
+    font_id, font_name_bytes, codes, shapes_data, advances, ascent, descent
+):
     num_glyphs = len(codes)
 
     flags = 0x80 | 0x04  # HasLayout | WideCodes
@@ -347,7 +352,9 @@ def build_font_align_zones(font_id, num_glyphs):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Replace unicodefont.swf font with a TTF")
+    parser = argparse.ArgumentParser(
+        description="Replace unicodefont.swf font with a TTF"
+    )
     parser.add_argument("--font", default=DEFAULT_TTF, help="TTF font file path")
     parser.add_argument("--restore", action="store_true", help="Restore from backup")
     parser.add_argument("--dry", action="store_true", help="Dry run")
@@ -427,8 +434,10 @@ def main():
             orig_font_id = struct.unpack_from("<H", data, 0)[0]
             nlen = data[4]
             orig_font_name = data[5 : 5 + nlen]
-            orig_font_name_str = orig_font_name.decode("utf-8", "replace").rstrip("\x00")
-            print(f"  Original font: ID={orig_font_id}, name=\"{orig_font_name_str}\"")
+            orig_font_name_str = orig_font_name.decode("utf-8", "replace").rstrip(
+                "\x00"
+            )
+            print(f'  Original font: ID={orig_font_id}, name="{orig_font_name_str}"')
             break
 
     if orig_font_id is None:
@@ -487,7 +496,13 @@ def main():
     print(f"  Converted {len(codes)} glyphs ({failed} failed)")
 
     font3_data = build_define_font3(
-        orig_font_id, orig_font_name, codes, shapes_data, advances, ascent_swf, descent_swf
+        orig_font_id,
+        orig_font_name,
+        codes,
+        shapes_data,
+        advances,
+        ascent_swf,
+        descent_swf,
     )
     print(f"  DefineFont3 tag: {len(font3_data)} bytes")
 

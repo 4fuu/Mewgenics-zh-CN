@@ -7,13 +7,14 @@ Workflow:
   3. Repack into a patched resources.gpak
 
 Usage:
-  uv run python main.py extract          - Extract all files from resources.gpak
-  uv run python main.py add-zh-column    - Add empty 'zh' column to all CSV files
-  uv run python main.py translate        - Translate all CSV files
-  uv run python main.py translate --dry  - Show translation progress without translating
-  uv run python main.py pack             - Repack extracted/ into resources_patched.gpak
-  uv run python main.py apply            - Replace resources.gpak with patched version (backs up original)
-  uv run python main.py info             - Show archive info
+  uv run main.py extract          - Extract all files from resources.gpak
+  uv run main.py add-zh-column    - Add empty 'zh' column to all CSV files
+  uv run main.py translate              - Translate all CSV files
+  uv run main.py translate --dry        - Show translation progress without translating
+  uv run main.py translate --apply-only - Apply existing translations only, no AI
+  uv run main.py pack             - Repack extracted/ into resources_patched.gpak
+  uv run main.py apply            - Replace resources.gpak with patched version (backs up original)
+  uv run main.py info             - Show archive info
 """
 
 import struct
@@ -333,6 +334,11 @@ def main():
     tr_parser.add_argument(
         "--dry", action="store_true", help="Show progress without translating"
     )
+    tr_parser.add_argument(
+        "--apply-only",
+        action="store_true",
+        help="Only apply existing translations from progress file, no AI",
+    )
     args = parser.parse_args()
 
     if args.command == "info":
@@ -350,17 +356,18 @@ def main():
             batch_size=args.batch_size,
             files=args.files,
             dry_run=args.dry,
+            apply_only=args.apply_only,
         )
     elif args.command == "apply":
         cmd_apply()
     else:
         parser.print_help()
         print("\nTypical workflow:")
-        print("  1. uv run python main.py extract        # Extract all files")
-        print("  2. uv run python main.py add-zh-column  # Add Chinese column to CSVs")
-        print("  3. uv run python main.py translate      # Auto-translate to Chinese")
-        print("  4. uv run python main.py pack           # Create patched GPAK")
-        print("  5. uv run python main.py apply          # Apply patch to game")
+        print("  1. uv run main.py extract        # Extract all files")
+        print("  2. uv run main.py add-zh-column  # Add Chinese column to CSVs")
+        print("  3. uv run main.py translate      # Auto-translate to Chinese")
+        print("  4. uv run main.py pack           # Create patched GPAK")
+        print("  5. uv run main.py apply          # Apply patch to game")
 
 
 if __name__ == "__main__":

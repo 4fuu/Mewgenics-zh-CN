@@ -103,6 +103,7 @@ $env:DASHSCOPE_API_KEY="your-api-key"           # PowerShell
 ```bash
 uv run main.py translate                           # 翻译全部
 uv run main.py translate --dry                     # 仅查看进度，不翻译
+uv run main.py translate --apply-only              # 仅应用已有翻译，不调用 AI
 uv run main.py translate --files events.csv        # 只翻译指定文件
 uv run main.py translate --batch-size 100          # 每批 100 条
 ```
@@ -110,6 +111,7 @@ uv run main.py translate --batch-size 100          # 每批 100 条
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--dry` | — | 仅显示翻译进度统计，不调用 API |
+| `--apply-only` | — | 仅将已有翻译写入 CSV，不调用 AI |
 | `--files FILE [FILE ...]` | 全部 19 个 CSV | 只翻译指定的 CSV 文件 |
 | `--batch-size N` | 50 | 每次 API 调用包含的文本条数 |
 
