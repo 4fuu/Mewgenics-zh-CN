@@ -243,8 +243,9 @@ def collect_entries(
 
         full_key = f"{csv_file}::{key}"
         if full_key in done_keys:
-            if not row[zh_idx].strip():
-                row[zh_idx] = done_keys[full_key] if isinstance(done_keys, dict) else ""
+            translated = done_keys[full_key] if isinstance(done_keys, dict) else ""
+            if translated:
+                row[zh_idx] = translated
             continue
 
         if row[zh_idx].strip():

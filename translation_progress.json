@@ -620,7 +620,7 @@
   "additions2.csv::QEVENT_STACYMUTANT4_ANSW4": "不了，谢谢",
   "additions2.csv::QEVENT_STACYMUTANT4_REW4": "{catname}猜到了接下来会发生什么，\n但当机器给{him}注射时还是忍不住缩了一下！",
   "additions2.csv::QEVENT_STACYMUTANT4_REW5": "{Catname}感到筋疲力尽……",
-  "additions.csv::CURRENT_LANGUAGE_NAME": "英文",
+  "additions.csv::CURRENT_LANGUAGE_NAME": "中文",
   "additions.csv::CURRENT_LANGUAGE_SHIPPABLE": "yes",
   "additions.csv::SONG_UNLOCK_CREDITS_1": "“Get in the Cage”现已加入电台播放列表！",
   "additions.csv::SONG_UNLOCK_CREDITS_2": "“Future Meets the Past”现已加入电台播放列表！",
