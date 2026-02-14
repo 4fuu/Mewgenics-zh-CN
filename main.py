@@ -369,6 +369,21 @@ def main():
     wrap_parser.add_argument(
         "--dry", action="store_true", help="Show what would change without modifying files"
     )
+    auto_wrap_parser = sub.add_parser(
+        "auto-wrap", help="Use AI to add line breaks to overflow entries"
+    )
+    auto_wrap_parser.add_argument(
+        "--max-width",
+        type=int,
+        default=40,
+        help="Maximum display width per line (default: 40)",
+    )
+    auto_wrap_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=30,
+        help="Entries per AI batch (default: 30)",
+    )
     args = parser.parse_args()
 
     if args.command == "info":
@@ -399,6 +414,13 @@ def main():
             max_width=args.max_width,
             files=args.files,
             dry_run=args.dry,
+        )
+    elif args.command == "auto-wrap":
+        from translate import run_auto_wrap
+
+        run_auto_wrap(
+            max_width=args.max_width,
+            batch_size=args.batch_size,
         )
     elif args.command == "apply":
         cmd_apply()

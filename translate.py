@@ -449,9 +449,16 @@ _TAG_RE = re.compile(r"\[[^\]]*\]|\{[^}]*\}|&[a-zA-Z]+;")
 _BREAK_AFTER_PUNCT = set("。！？，、；：）》」』")
 
 
-def wrap_text(text: str, max_width: int = 40) -> str:
+def wrap_text(text: str, max_width: int = 40) -> tuple[str, bool]:
+    """Wrap *text* so each line fits within *max_width*.
+
+    Returns ``(wrapped_text, overflow)`` where *overflow* is ``True`` when at
+    least one line could not be broken because no punctuation break-point was
+    found within the width limit.
+    """
     lines = text.split("\n")
     result = []
+    overflow = False
     for line in lines:
         if display_width(line) <= max_width:
             result.append(line)
@@ -466,11 +473,25 @@ def wrap_text(text: str, max_width: int = 40) -> str:
         if last < len(line):
             tokens.append(("text", line[last:]))
 
-        buf = []
+        buf: list[str] = []
         w = 0
         punct_pos = -1
         punct_w = 0
-        out_lines = []
+        out_lines: list[str] = []
+
+        def _flush_at_punct():
+            nonlocal buf, w, punct_pos, punct_w
+            out_lines.append("".join(buf[: punct_pos + 1]))
+            buf = buf[punct_pos + 1 :]
+            # recalculate width of remaining buffer
+            w = 0
+            for item in buf:
+                if len(item) > 1:  # tag
+                    pass
+                else:
+                    w += char_width(item)
+            punct_pos = -1
+            punct_w = 0
 
         for tok_type, tok_val in tokens:
             if tok_type == "tag":
@@ -480,12 +501,9 @@ def wrap_text(text: str, max_width: int = 40) -> str:
                 cw = char_width(c)
                 if w + cw > max_width and w > 0:
                     if punct_pos >= 0:
-                        out_lines.append("".join(buf[: punct_pos + 1]))
-                        buf = buf[punct_pos + 1 :]
-                        w = w - punct_w
-                        punct_pos = -1
-                        punct_w = 0
-                    # else: no good break point, keep going (don't hard-break mid-word)
+                        _flush_at_punct()
+                    else:
+                        overflow = True
                 buf.append(c)
                 w += cw
                 if c in _BREAK_AFTER_PUNCT:
@@ -495,7 +513,10 @@ def wrap_text(text: str, max_width: int = 40) -> str:
         if buf:
             out_lines.append("".join(buf))
         result.append("\n".join(out_lines))
-    return "\n".join(result)
+    return "\n".join(result), overflow
+
+
+OVERFLOW_FILE = "wrap_overflow.json"
 
 
 def run_wrap(
@@ -515,7 +536,23 @@ def run_wrap(
         print("No translations found in progress file.")
         return
 
+    # Import manually edited overflow entries back into progress
+    if os.path.exists(OVERFLOW_FILE):
+        with open(OVERFLOW_FILE, "r", encoding="utf-8") as f:
+            overflow_edits: dict[str, str] = json.load(f)
+        imported = 0
+        for key, value in overflow_edits.items():
+            if key in progress and progress[key] != value:
+                progress[key] = value
+                imported += 1
+        if imported > 0:
+            save_progress(progress)
+            print(f"Imported {imported} entries from {OVERFLOW_FILE}")
+        os.remove(OVERFLOW_FILE)
+        print(f"Removed {OVERFLOW_FILE}")
+
     modified_count = 0
+    overflow_entries: dict[str, str] = {}
     examples = []
 
     for key, value in list(progress.items()):
@@ -523,7 +560,9 @@ def run_wrap(
             csv_file = key.split("::")[0]
             if csv_file not in files:
                 continue
-        wrapped = wrap_text(value, max_width)
+        wrapped, overflow = wrap_text(value, max_width)
+        if overflow:
+            overflow_entries[key] = value
         if wrapped != value:
             modified_count += 1
             if len(examples) < 5:
@@ -539,14 +578,27 @@ def run_wrap(
             print(f"\n  [{key}]")
             print(f"    Before: {old!r}")
             print(f"    After:  {new!r}")
+        if overflow_entries:
+            print(
+                f"\n{len(overflow_entries)} entries overflow (no punctuation break-point)."
+            )
         return
 
-    if modified_count == 0:
+    if overflow_entries:
+        with open(OVERFLOW_FILE, "w", encoding="utf-8") as f:
+            json.dump(overflow_entries, f, ensure_ascii=False, indent=2)
+        print(f"{len(overflow_entries)} entries overflow — saved to {OVERFLOW_FILE}")
+        print(
+            "  Add punctuation to these entries in translation_progress.json, then re-run wrap."
+        )
+
+    if modified_count == 0 and not overflow_entries:
         print("No entries need wrapping.")
         return
 
-    save_progress(progress)
-    print(f"Updated {modified_count} entries in {PROGRESS_FILE}")
+    if modified_count > 0:
+        save_progress(progress)
+        print(f"Updated {modified_count} entries in {PROGRESS_FILE}")
 
     # Apply wrapped text to CSVs
     target_files = files if files else CSV_FILES
@@ -573,6 +625,140 @@ def run_wrap(
             print(f"  Updated {csv_file}")
 
     print("Done.")
+
+
+def run_auto_wrap(max_width: int = 40, batch_size: int = 30):
+    """Use AI to automatically add line breaks to overflow entries.
+
+    Reads wrap_overflow.json, sends entries that still need line breaks
+    to AI in batches, and writes the results back.
+    """
+    from ai import completion
+
+    if not os.path.exists(OVERFLOW_FILE):
+        print(f"{OVERFLOW_FILE} not found. Run 'wrap' first.")
+        return
+
+    with open(OVERFLOW_FILE, "r", encoding="utf-8") as f:
+        overflow: dict[str, str] = json.load(f)
+
+    # Filter entries that still have at least one line exceeding max_width
+    needs_wrap = {}
+    for k, v in overflow.items():
+        # Skip non-Chinese entries
+        if not any("\u4e00" <= c <= "\u9fff" for c in v):
+            continue
+        needs_wrap[k] = v
+
+    if not needs_wrap:
+        print("No entries need auto-wrapping.")
+        return
+
+    print(f"Auto-wrapping {len(needs_wrap)} entries (max_width={max_width})...")
+
+    keys = list(needs_wrap.keys())
+    updated = 0
+    skipped = 0
+
+    for i in range(0, len(keys), batch_size):
+        batch_keys = keys[i : i + batch_size]
+        batch_values = [needs_wrap[k] for k in batch_keys]
+
+        # Build prompt: mark which lines overflow
+        prompt_entries = []
+        for k, v in zip(batch_keys, batch_values):
+            entry_lines = []
+            for line in v.split("\n"):
+                w = display_width(line)
+                if w > max_width:
+                    entry_lines.append(f"{line}    ←此行宽度{w}，需要断行")
+                else:
+                    entry_lines.append(line)
+            prompt_entries.append((k, "\n".join(entry_lines)))
+
+        lines = []
+        lines.append(
+            f"你是一个游戏文本排版助手。以下文本中有些行的显示宽度超过了{max_width}个单位"
+            f"（中文字符=2单位，英文/数字/标点=1单位），我已用←标记了超宽行。"
+        )
+        lines.append(
+            f"你需要将这些超宽行拆分成多行，使每行宽度不超过{max_width}个单位。"
+            "未标记的行不要改动。"
+        )
+        lines.append("")
+        lines.append("规则：")
+        lines.append("1. 只修改标记了←的超宽行，在语义自然的位置插入换行")
+        lines.append("2. 没有标点可断的长句，直接在词语之间断行即可")
+        lines.append(f"3. 断行后每行宽度必须≤{max_width}（中文字符=2，其他=1）")
+        lines.append(
+            "4. [img:xxx]、[b]...[/b]、{xxx} 等标记标签宽度为0，不要拆开"
+        )
+        lines.append("5. 不要修改文字内容，只添加换行")
+        lines.append("6. 输出中不要包含←标记")
+        lines.append("")
+        lines.append(
+            f"【输出格式】每条结果之间用一行 {ENTRY_SEP} 分隔（单独占一行），"
+            "严格按顺序输出，只输出处理后的完整文本。"
+        )
+        lines.append("")
+        lines.append(
+            f"以下共 {len(prompt_entries)} 条文本（用 ---- 分隔每条）："
+        )
+        lines.append("")
+
+        for j, (k, v) in enumerate(prompt_entries):
+            lines.append(f"[{j + 1}] {k}")
+            lines.append(v)
+            if j < len(prompt_entries) - 1:
+                lines.append("----")
+            lines.append("")
+
+        prompt = "\n".join(lines)
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            response = completion(messages)
+        except Exception as e:
+            print(f"  ERROR at batch {i}: {e}")
+            print("  Stopping.")
+            return
+
+        assert response, "response is None"
+
+        # Parse by ENTRY_SEP on its own line
+        parts = re.split(rf"\s*{re.escape(ENTRY_SEP)}\s*", response.strip())
+        # Clean up: remove leading [N] or key prefixes
+        results = []
+        for p in parts:
+            p = p.strip()
+            p = re.sub(r"^\[\d+\]\s*", "", p)
+            p = re.sub(r"^[A-Za-z_]+::[A-Za-z_]+\s*", "", p)
+            results.append(p)
+
+        while len(results) < len(batch_keys):
+            results.append("")
+        results = results[: len(batch_keys)]
+
+        for k, new_value in zip(batch_keys, results):
+            if not new_value:
+                skipped += 1
+                continue
+            overflow[k] = new_value
+            max_line = max(display_width(line) for line in new_value.split("\n"))
+            if max_line <= max_width:
+                updated += 1
+            else:
+                skipped += 1
+
+        done = min(i + batch_size, len(keys))
+        print(f"  [{done}/{len(keys)}] 已处理，更新 {updated} 条，跳过 {skipped} 条")
+
+    # Save results back to overflow file for manual review
+    with open(OVERFLOW_FILE, "w", encoding="utf-8") as f:
+        json.dump(overflow, f, ensure_ascii=False, indent=2)
+
+    print(f"✓ AI 自动换行完成：更新 {updated} 条，跳过 {skipped} 条。")
+    print(f"  结果已写入 {OVERFLOW_FILE}，请检查后运行 wrap 命令应用。")
 
 
 # --- Check translations for quality issues ---
@@ -681,9 +867,7 @@ def _remove_notes(text: str) -> str:
 def _apply_progress_to_csvs(progress: dict, files: list[str] | None = None):
     """Write progress values back to CSV files."""
     target_files = files if files else CSV_FILES
-    available = [
-        f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))
-    ]
+    available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
     for csv_file in available:
         filepath = os.path.join(TEXT_DIR, csv_file)
         header, rows = read_csv(filepath)
@@ -704,11 +888,15 @@ def _apply_progress_to_csvs(progress: dict, files: list[str] | None = None):
             print(f"  Updated {csv_file}")
 
 
-def _build_fix_mixed_prompt(entries: list[tuple[str, str, list[str]]], glossary: dict[str, str]) -> str:
+def _build_fix_mixed_prompt(
+    entries: list[tuple[str, str, list[str]]], glossary: dict[str, str]
+) -> str:
     """Build a prompt to fix mixed Chinese-English translations."""
     lines = []
     lines.append("你是游戏《Mewgenics》的中文本地化校对员。")
-    lines.append("以下译文中残留了未翻译的英文单词，请将这些英文单词翻译为中文，修正译文。")
+    lines.append(
+        "以下译文中残留了未翻译的英文单词，请将这些英文单词翻译为中文，修正译文。"
+    )
     lines.append("")
 
     matched = {}
@@ -725,11 +913,15 @@ def _build_fix_mixed_prompt(entries: list[tuple[str, str, list[str]]], glossary:
 
     lines.append("【规则】")
     lines.append("1. 只翻译残留的英文单词，不要改动译文的其余部分")
-    lines.append("2. 保留所有标记标签不变，包括 [m:happy] [s:1.5] [b]...[/b] {catname} {his} &nbsp; 等")
+    lines.append(
+        "2. 保留所有标记标签不变，包括 [m:happy] [s:1.5] [b]...[/b] {catname} {his} &nbsp; 等"
+    )
     lines.append("3. 保留原文中的换行符")
     lines.append("4. 如果某个英文单词是专有名词或缩写，应保持原样不翻译")
     lines.append("")
-    lines.append(f"【输出格式】每条修正后的译文之间用 {ENTRY_SEP} 分隔，严格按顺序输出，只输出修正后的完整译文。")
+    lines.append(
+        f"【输出格式】每条修正后的译文之间用 {ENTRY_SEP} 分隔，严格按顺序输出，只输出修正后的完整译文。"
+    )
     lines.append("")
     lines.append(f"以下共 {len(entries)} 条需要修正的译文：")
     lines.append("")
@@ -789,7 +981,9 @@ def _fix_mixed_entries(
     print(f"✓ AI 修正了 {fixed_count} 条混合中英文译文。")
 
 
-def run_check(fix: bool = False, fix_mixed: bool = False, files: list[str] | None = None):
+def run_check(
+    fix: bool = False, fix_mixed: bool = False, files: list[str] | None = None
+):
     """Check translations for mixed Chinese-English and stray notes.
 
     Args:
@@ -885,7 +1079,9 @@ def run_check(fix: bool = False, fix_mixed: bool = False, files: list[str] | Non
 
     # Fix mixed Chinese-English via AI
     if fix_mixed and mixed_entries:
-        print(f"\n🔧 Using AI to fix {len(mixed_entries)} mixed Chinese-English entries...")
+        print(
+            f"\n🔧 Using AI to fix {len(mixed_entries)} mixed Chinese-English entries..."
+        )
         _fix_mixed_entries(mixed_entries, progress, glossary, files)
     elif mixed_entries:
         print(
