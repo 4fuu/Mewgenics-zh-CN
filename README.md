@@ -6,9 +6,22 @@
 
 ## 安装补丁（玩家）
 
+### 方式一：一键补丁工具（推荐）
+
+1. 从 [Releases](../../releases) 下载 `mewpatch.exe`
+2. 将 `mewpatch.exe` 放入游戏目录（`Steam/steamapps/common/Mewgenics/`）
+3. **双击运行** `mewpatch.exe`，等待自动完成（解包→翻译→字体替换→打包→应用）
+4. 启动游戏，在设置中将语言切换为中文
+
+工具会自动备份原始 `resources.gpak` 为 `resources.gpak.bak`。如需还原，将备份文件改回 `resources.gpak` 即可。
+
+> 也可以在命令行中使用 `mewpatch help` 查看所有命令。
+
+### 方式二：直接替换资源文件
+
 1. 从 [Releases](../../releases) 下载 `resources.gpak`
 2. 备份游戏目录下的原始 `resources.gpak`（重命名为 `resources.gpak.bak` 即可）
-3. 将下载的 `resources.gpak` 放入游戏目录（`Steam/steamapps/common/Mewgenics/`）
+3. 将下载的 `resources.gpak` 放入游戏目录
 4. 启动游戏，在设置中将语言切换为中文
 
 如需还原，将备份文件改回 `resources.gpak` 即可。
@@ -54,7 +67,49 @@
 
 ## 开发者指南
 
-将本仓库克隆到游戏目录（`Steam/steamapps/common/Mewgenics/`），安装 [uv](https://docs.astral.sh/uv/)，然后按以下流程操作。
+将本仓库克隆到游戏目录（`Steam/steamapps/common/Mewgenics/`）。
+
+### 补丁工具（Go）
+
+补丁工具是一个 Go 程序，编译为单个独立二进制文件 `mewpatch.exe`。翻译数据（`translation_progress.json`）和中文字体（`MaoKenZhuYuanTi-MaokenZhuyuanTi-2.ttf`）通过 `go:embed` 嵌入到二进制中，用户无需额外文件。
+
+#### 编译
+
+需要 [Go](https://go.dev/) 1.25+：
+
+```bash
+go mod tidy                        # 解析依赖
+go build -o mewpatch.exe ./cmd/    # 编译
+```
+
+#### 命令
+
+| 命令 | 说明 |
+|------|------|
+| `mewpatch patch` | 一键执行全部步骤（解包→翻译→字体→打包→替换） |
+| `mewpatch extract` | 解包 `resources.gpak` 到 `extracted/` |
+| `mewpatch apply-translations` | 将内嵌翻译数据应用到 CSV 文件 |
+| `mewpatch replace-font` | 替换 `unicodefont.swf` 中的 CJK 字体 |
+| `mewpatch pack` | 重新打包为 `resources_patched.gpak` |
+| `mewpatch apply` | 用补丁文件替换 `resources.gpak`（自动备份） |
+| `mewpatch info` | 查看 GPAK 文件信息 |
+| `mewpatch help` | 显示帮助 |
+
+> 双击运行时默认执行 `patch`，完成后等待按回车退出。
+
+#### 源码结构
+
+| 文件 | 说明 |
+|------|------|
+| `embed.go` | `go:embed` 嵌入翻译数据和字体文件（package `mewpatch`） |
+| `cmd/main.go` | CLI 入口和 `patch` 一键流程 |
+| `cmd/gpak.go` | GPAK 格式解析、解包、打包 |
+| `cmd/translate.go` | 读取内嵌翻译数据，应用到 CSV 的 `zh` 列 |
+| `cmd/font.go` | TTF → SWF 字形转换，替换 `unicodefont.swf` |
+
+### 翻译工作流（Python）
+
+安装 [uv](https://docs.astral.sh/uv/)，然后按以下流程操作。
 
 ### 完整工作流
 
@@ -207,7 +262,12 @@ uv run replace_unicode_font.py --restore           # 恢复原始字体
 
 | 文件 | 说明 |
 |------|------|
-| `main.py` | CLI 入口（解包/打包/应用补丁） |
+| `embed.go` | Go embed 嵌入翻译数据和字体 |
+| `cmd/main.go` | Go 补丁工具 CLI 入口 |
+| `cmd/gpak.go` | GPAK 格式解析、解包、打包 |
+| `cmd/translate.go` | 应用内嵌翻译到 CSV |
+| `cmd/font.go` | TTF → SWF 字形转换 |
+| `main.py` | Python CLI 入口（解包/打包/应用补丁） |
 | `translate.py` | AI 翻译逻辑（批量翻译、术语提取、进度管理） |
 | `ai.py` | AI API 封装（通义千问 qwen3-max） |
 | `glossary.json` | 术语表（英文 → 中文映射，翻译时强制使用） |
@@ -216,6 +276,11 @@ uv run replace_unicode_font.py --restore           # 恢复原始字体
 
 ## 依赖
 
+**补丁工具（编译）：**
+- [Go](https://go.dev/) >= 1.25
+- `golang.org/x/image`（TTF 字体解析）
+
+**翻译工作流（开发）：**
 - Python >= 3.14
 - [uv](https://docs.astral.sh/uv/)
 - `openai`（AI 翻译时需要）
