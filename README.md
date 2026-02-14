@@ -17,7 +17,7 @@
 
 > 也可以在命令行中使用 `mewpatch help` 查看所有命令。
 
-### 方式二：直接替换资源文件
+### 方式二：直接替换资源文件（已弃用）
 
 1. 从 [Releases](../../releases) 下载 `resources.gpak`
 2. 备份游戏目录下的原始 `resources.gpak`（重命名为 `resources.gpak.bak` 即可）
