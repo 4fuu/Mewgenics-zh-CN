@@ -12,6 +12,7 @@ Usage:
   uv run main.py translate              - Translate all CSV files
   uv run main.py translate --dry        - Show translation progress without translating
   uv run main.py translate --apply-only - Apply existing translations only, no AI
+  uv run main.py check            - Check translations for mixed Chinese-English issues
   uv run main.py pack             - Repack extracted/ into resources_patched.gpak
   uv run main.py apply            - Replace resources.gpak with patched version (backs up original)
   uv run main.py info             - Show archive info
@@ -339,6 +340,22 @@ def main():
         action="store_true",
         help="Only apply existing translations from progress file, no AI",
     )
+    check_parser = sub.add_parser(
+        "check", help="Check translations for mixed Chinese-English issues"
+    )
+    check_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Auto-fix: remove trailing notes/remarks from translations",
+    )
+    check_parser.add_argument(
+        "--fix-mixed",
+        action="store_true",
+        help="Auto-fix: use AI to fix mixed Chinese-English translations",
+    )
+    check_parser.add_argument(
+        "--files", nargs="+", help="Only check specific CSV files"
+    )
     wrap_parser = sub.add_parser("wrap", help="Auto-wrap long translated text lines")
     wrap_parser.add_argument(
         "--max-width",
@@ -371,6 +388,10 @@ def main():
             dry_run=args.dry,
             apply_only=args.apply_only,
         )
+    elif args.command == "check":
+        from translate import run_check
+
+        run_check(fix=args.fix, fix_mixed=args.fix_mixed, files=args.files)
     elif args.command == "wrap":
         from translate import run_wrap
 

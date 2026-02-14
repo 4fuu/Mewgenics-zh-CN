@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
 
-
 TEXT_DIR = "extracted/data/text"
 PROGRESS_FILE = "translation_progress.json"
 GLOSSARY_FILE = "glossary.json"
@@ -118,6 +117,12 @@ def build_prompt(entries: list[dict], glossary: dict[str, str]) -> str:
     lines.append("2. 保留原文中的换行符")
     lines.append("3. 译文要自然流畅，符合中文游戏玩家的阅读习惯")
     lines.append("4. 如果原文只是一个标点或者无需翻译，请原样返回")
+    lines.append(
+        '5. 每条原文后可能附有"(备注: ...)"，这是开发者的内部注释，仅供你理解语境，严禁将备注内容写入译文'
+    )
+    lines.append(
+        "6. 所有英文单词都必须翻译为中文，不要保留英文原文。唯一的例外是中文游戏语境下玩家习惯直接使用的英文词汇（如Boss、HP、MP、NPC、DPS等常见缩写），这类词可以保留英文"
+    )
     lines.append("")
     lines.append(
         f"【输出格式】每条翻译之间用 {ENTRY_SEP} 分隔，严格按顺序输出，不要添加编号、KEY或任何额外内容。只输出译文。"
@@ -322,7 +327,7 @@ def run_translate(
 
     if dry_run or apply_only:
         if apply_only:
-            print(f"\nApply-only mode: wrote existing translations to CSV files.")
+            print("\nApply-only mode: wrote existing translations to CSV files.")
         return
 
     if total_pending == 0:
@@ -526,7 +531,9 @@ def run_wrap(
                 progress[key] = wrapped
 
     if dry_run:
-        print(f"Dry run: {modified_count} entries would be modified (max_width={max_width})")
+        print(
+            f"Dry run: {modified_count} entries would be modified (max_width={max_width})"
+        )
         for key, old, new in examples:
             print(f"\n  [{key}]")
             print(f"    Before: {old!r}")
@@ -565,3 +572,323 @@ def run_wrap(
             print(f"  Updated {csv_file}")
 
     print("Done.")
+
+
+# --- Check translations for quality issues ---
+
+# English words that are acceptable in Chinese translations
+# (abbreviations, proper nouns, game terms, etc.)
+ACCEPTABLE_ENGLISH = {
+    # Common gaming/tech abbreviations
+    "HP",
+    "MP",
+    "AP",
+    "DPS",
+    "SP",
+    "EX",
+    "XP",
+    "DLC",
+    "RPG",
+    "AOE",
+    "AoE",
+    "NPC",
+    "BGM",
+    "SFX",
+    "UI",
+    "VIP",
+    "AI",
+    "MSAA",
+    "VHS",
+    "DVD",
+    "UFO",
+    "TNT",
+    "USA",
+    "AAA",
+    "MC",
+    "DJ",
+    "TV",
+    "PC",
+    "CD",
+    "VS",
+    "vs",
+    "OK",
+    "ok",
+    "DNA",
+    "DIE",
+    "OBEY",
+    "STOP",
+    "DUMB",
+    "PvP",
+    "PvE",
+    # Roman numerals
+    "II",
+    "III",
+    "IV",
+    "VI",
+    "VII",
+    "VIII",
+    "IX",
+    "XI",
+    "XII",
+}
+
+# Pattern to match trailing notes/remarks added by translators
+NOTE_PATTERNS = [
+    # （备注: ...）or (备注: ...)
+    r"\s*[（(]\s*备注\s*[:：].*?[)）]\s*$",
+    # （备注: ...  without closing bracket (end of string)
+    r"\s*[（(]\s*备注\s*[:：].*$",
+    # (备注: updated ✔️) style markers
+    r"\s*[（(]\s*备注\s*[:：].*?✔.*?[)）]?\s*$",
+]
+
+
+def _strip_tags(text: str) -> str:
+    """Remove markup tags and variables to isolate actual text."""
+    text = re.sub(r"\[.*?\]", "", text)
+    text = re.sub(r"\{.*?\}", "", text)
+    text = re.sub(r"&nbsp;", "", text)
+    return text
+
+
+def _find_mixed_english(text: str) -> list[str]:
+    """Find English words (2+ letters) in Chinese text, excluding acceptable ones."""
+    cleaned = _strip_tags(text)
+    # Also strip note sections before checking
+    for pattern in NOTE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL)
+    words = re.findall(r"[A-Za-z]{2,}", cleaned)
+    return [w for w in words if w not in ACCEPTABLE_ENGLISH]
+
+
+def _has_notes(text: str) -> re.Match | None:
+    """Check if text contains translator notes/remarks."""
+    for pattern in NOTE_PATTERNS:
+        m = re.search(pattern, text, flags=re.DOTALL | re.MULTILINE)
+        if m:
+            return m
+    return None
+
+
+def _remove_notes(text: str) -> str:
+    """Remove trailing translator notes from text."""
+    for pattern in NOTE_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.DOTALL | re.MULTILINE)
+    return text.rstrip()
+
+
+def _apply_progress_to_csvs(progress: dict, files: list[str] | None = None):
+    """Write progress values back to CSV files."""
+    target_files = files if files else CSV_FILES
+    available = [
+        f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))
+    ]
+    for csv_file in available:
+        filepath = os.path.join(TEXT_DIR, csv_file)
+        header, rows = read_csv(filepath)
+        if "zh" not in header:
+            continue
+        zh_idx = header.index("zh")
+        changed = False
+        for row in rows:
+            while len(row) < len(header):
+                row.append("")
+            full_key = f"{csv_file}::{row[0]}"
+            if full_key in progress and row[zh_idx].strip():
+                if row[zh_idx] != progress[full_key]:
+                    row[zh_idx] = progress[full_key]
+                    changed = True
+        if changed:
+            write_csv(filepath, header, rows)
+            print(f"  Updated {csv_file}")
+
+
+def _build_fix_mixed_prompt(entries: list[tuple[str, str, list[str]]], glossary: dict[str, str]) -> str:
+    """Build a prompt to fix mixed Chinese-English translations."""
+    lines = []
+    lines.append("你是游戏《Mewgenics》的中文本地化校对员。")
+    lines.append("以下译文中残留了未翻译的英文单词，请将这些英文单词翻译为中文，修正译文。")
+    lines.append("")
+
+    matched = {}
+    combined = "\n".join(val for _, val, _ in entries).lower()
+    for en_term, zh_term in glossary.items():
+        if en_term.lower() in combined:
+            matched[en_term] = zh_term
+
+    if matched:
+        lines.append("【术语表】翻译时必须使用以下统一译名：")
+        for en, zh in matched.items():
+            lines.append(f"  {en} = {zh}")
+        lines.append("")
+
+    lines.append("【规则】")
+    lines.append("1. 只翻译残留的英文单词，不要改动译文的其余部分")
+    lines.append("2. 保留所有标记标签不变，包括 [m:happy] [s:1.5] [b]...[/b] {catname} {his} &nbsp; 等")
+    lines.append("3. 保留原文中的换行符")
+    lines.append("4. 如果某个英文单词是专有名词或缩写，应保持原样不翻译")
+    lines.append("")
+    lines.append(f"【输出格式】每条修正后的译文之间用 {ENTRY_SEP} 分隔，严格按顺序输出，只输出修正后的完整译文。")
+    lines.append("")
+    lines.append(f"以下共 {len(entries)} 条需要修正的译文：")
+    lines.append("")
+
+    for i, (key, value, eng_words) in enumerate(entries):
+        val_display = value.replace("\n", "\\n")
+        lines.append(f"[{i + 1}] {key}")
+        lines.append(f"    当前译文：{val_display}")
+        lines.append(f"    残留英文：{', '.join(eng_words)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _fix_mixed_entries(
+    mixed_entries: list[tuple[str, str, list[str]]],
+    progress: dict,
+    glossary: dict[str, str],
+    files: list[str] | None = None,
+    batch_size: int = 30,
+):
+    """Use AI to fix mixed Chinese-English translations."""
+    from ai import completion
+
+    total = len(mixed_entries)
+    fixed_count = 0
+    t_start = time.time()
+
+    for batch_start in range(0, total, batch_size):
+        batch = mixed_entries[batch_start : batch_start + batch_size]
+        prompt = _build_fix_mixed_prompt(batch, glossary)
+
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = completion(messages)
+        except Exception as e:
+            print(f"  ERROR at batch {batch_start}: {e}")
+            print("  Saving progress and stopping.")
+            save_progress(progress)
+            _apply_progress_to_csvs(progress, files)
+            return
+
+        assert response, "response is None"
+        results = parse_response(response, len(batch))
+
+        for (key, old_value, _), new_value in zip(batch, results):
+            if new_value and new_value != old_value:
+                progress[key] = new_value
+                fixed_count += 1
+
+        elapsed = time.time() - t_start
+        done = min(batch_start + batch_size, total)
+        print(f"  [{done}/{total}] 已修正 {fixed_count} 条 ({elapsed:.0f}s)")
+
+    save_progress(progress)
+    _apply_progress_to_csvs(progress, files)
+    print(f"✓ AI 修正了 {fixed_count} 条混合中英文译文。")
+
+
+def run_check(fix: bool = False, fix_mixed: bool = False, files: list[str] | None = None):
+    """Check translations for mixed Chinese-English and stray notes.
+
+    Args:
+        fix: If True, auto-remove trailing notes from translations.
+        fix_mixed: If True, use AI to fix mixed Chinese-English translations.
+        files: List of CSV filenames to check. None = all files.
+    """
+    progress = load_progress()
+    if not progress:
+        print("No translations found in progress file.")
+        return
+
+    glossary = load_glossary()
+    # Glossary values (Chinese terms) are fine, but glossary keys mapped to
+    # English proper nouns that appear in translations are also acceptable
+    extra_acceptable = set()
+    for en_term in glossary:
+        # If the glossary keeps the English name as-is, it's acceptable
+        if re.match(r"^[A-Za-z]", en_term):
+            for word in en_term.split():
+                if len(word) >= 2:
+                    extra_acceptable.add(word)
+
+    note_entries = []
+    mixed_entries = []
+
+    for key, value in sorted(progress.items()):
+        if not value or not isinstance(value, str):
+            continue
+        if files:
+            csv_file = key.split("::")[0]
+            if csv_file not in files:
+                continue
+        # Must contain Chinese to be considered a translation
+        if not re.search(r"[\u4e00-\u9fff]", value):
+            continue
+
+        # Check for notes
+        if _has_notes(value):
+            note_entries.append((key, value))
+
+        # Check for mixed English (after stripping notes)
+        eng_words = _find_mixed_english(value)
+        eng_words = [w for w in eng_words if w not in extra_acceptable]
+        if eng_words:
+            mixed_entries.append((key, value, eng_words))
+
+    # Report
+    print(f"Checked {len(progress)} translations.\n")
+
+    if note_entries:
+        print(f"⚠ Translator notes found: {len(note_entries)}")
+        for key, val in note_entries[:10]:
+            short = val.replace("\n", " ")
+            if len(short) > 80:
+                short = short[:80] + "..."
+            print(f"  {key}")
+            print(f"    {short}")
+        if len(note_entries) > 10:
+            print(f"  ... and {len(note_entries) - 10} more")
+        print()
+
+    if mixed_entries:
+        print(f"⚠ Mixed Chinese-English: {len(mixed_entries)}")
+        for key, val, words in mixed_entries[:20]:
+            short = val.replace("\n", " ")
+            if len(short) > 80:
+                short = short[:80] + "..."
+            print(f"  {key}")
+            print(f"    {short}")
+            print(f"    残留英文: {words}")
+        if len(mixed_entries) > 20:
+            print(f"  ... and {len(mixed_entries) - 20} more")
+        print()
+
+    if not note_entries and not mixed_entries:
+        print("✓ No issues found.")
+        return
+
+    # Fix mode: remove notes
+    if fix and note_entries:
+        fixed_count = 0
+        for key, value in note_entries:
+            cleaned = _remove_notes(value)
+            if cleaned != value:
+                progress[key] = cleaned
+                fixed_count += 1
+        save_progress(progress)
+        print(f"✓ Removed notes from {fixed_count} entries.")
+        _apply_progress_to_csvs(progress, files)
+    elif fix:
+        print("No notes to fix.")
+
+    # Fix mixed Chinese-English via AI
+    if fix_mixed and mixed_entries:
+        print(f"\n🔧 Using AI to fix {len(mixed_entries)} mixed Chinese-English entries...")
+        _fix_mixed_entries(mixed_entries, progress, glossary, files)
+    elif mixed_entries:
+        print(
+            f"\n💡 {len(mixed_entries)} entries have mixed English that may need manual review."
+        )
+        print("   Use --fix-mixed to auto-fix with AI.")
+        print("   Add acceptable terms to glossary.json to suppress false positives.")
