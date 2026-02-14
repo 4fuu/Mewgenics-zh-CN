@@ -221,6 +221,10 @@ uv run replace_unicode_font.py --restore           # 恢复原始字体
 - `openai`（AI 翻译时需要）
 - `fonttools`（替换字体时需要）
 
+## 其他说明
+
+- 如果需要临时运行命令，就使用`uv run python`即可。
+
 ## 许可
 
 本项目为社区汉化工具，不包含任何游戏资源文件。
