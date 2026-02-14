@@ -5,6 +5,7 @@ description = "Mewgenics 简体中文汉化补丁"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "dotenv>=0.9.9",
     "fonttools>=4.61.1",
     "openai>=2.20.0",
 ]

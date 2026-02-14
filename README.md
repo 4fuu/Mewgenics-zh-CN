@@ -63,8 +63,9 @@ uv sync  # 初始化项目和依赖
 uv run main.py extract        # 1. 解包资源文件
 uv run main.py add-zh-column  # 2. 为 CSV 添加 zh 列
 uv run main.py translate      # 3. AI 自动翻译（需要 API Key）
-uv run main.py pack           # 4. 重新打包
-uv run main.py apply          # 5. 应用补丁
+uv run main.py wrap           # 4. 自动换行（按显示宽度）
+uv run main.py pack           # 5. 重新打包
+uv run main.py apply          # 6. 应用补丁
 ```
 
 ### 命令详解
@@ -114,6 +115,23 @@ uv run main.py translate --batch-size 100          # 每批 100 条
 | `--apply-only` | — | 仅将已有翻译写入 CSV，不调用 AI |
 | `--files FILE [FILE ...]` | 全部 19 个 CSV | 只翻译指定的 CSV 文件 |
 | `--batch-size N` | 50 | 每次 API 调用包含的文本条数 |
+
+#### `wrap` — 自动换行
+
+按显示宽度对翻译文本自动插入换行符。中文字符宽度计为 2，英文/数字计为 1，标签（`[...]`、`{...}`）计为 0。优先在中文标点（句号、逗号等）后断行，避免在词中间断开。
+
+```bash
+uv run main.py wrap                        # 默认宽度 40 换行
+uv run main.py wrap --max-width 50         # 指定最大显示宽度
+uv run main.py wrap --dry                  # 仅查看会修改的条目
+uv run main.py wrap --files items.csv      # 只处理指定文件
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--max-width N` | 40 | 每行最大显示宽度（中文字符=2，英文=1） |
+| `--files FILE [FILE ...]` | 全部 | 只处理指定的 CSV 文件 |
+| `--dry` | — | 仅显示会修改的条目，不写入文件 |
 
 #### `pack` — 重新打包
 

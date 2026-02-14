@@ -10,6 +10,7 @@ import os
 import json
 import time
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
@@ -410,3 +411,157 @@ def run_translate(
     elapsed = time.time() - t_start
     print(f"\nDone. Translated {translated_total} entries in {elapsed:.1f}s")
     print(f"Progress saved to {PROGRESS_FILE}")
+
+
+def char_width(c: str) -> int:
+    eaw = unicodedata.east_asian_width(c)
+    return 2 if eaw in ("W", "F") else 1
+
+
+def display_width(text: str) -> int:
+    width = 0
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c in ("[", "{"):
+            close = "]" if c == "[" else "}"
+            j = text.find(close, i + 1)
+            if j != -1:
+                i = j + 1
+                continue
+        if c == "&":
+            m = re.match(r"&[a-zA-Z]+;", text[i:])
+            if m:
+                i += len(m.group())
+                continue
+        width += char_width(c)
+        i += 1
+    return width
+
+
+_TAG_RE = re.compile(r"\[[^\]]*\]|\{[^}]*\}|&[a-zA-Z]+;")
+_BREAK_AFTER_PUNCT = set("。！？，、；：）》」』")
+
+
+def wrap_text(text: str, max_width: int = 40) -> str:
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        if display_width(line) <= max_width:
+            result.append(line)
+            continue
+        tokens = []
+        last = 0
+        for m in _TAG_RE.finditer(line):
+            if m.start() > last:
+                tokens.append(("text", line[last : m.start()]))
+            tokens.append(("tag", m.group()))
+            last = m.end()
+        if last < len(line):
+            tokens.append(("text", line[last:]))
+
+        buf = []
+        w = 0
+        punct_pos = -1
+        punct_w = 0
+        out_lines = []
+
+        for tok_type, tok_val in tokens:
+            if tok_type == "tag":
+                buf.append(tok_val)
+                continue
+            for c in tok_val:
+                cw = char_width(c)
+                if w + cw > max_width and w > 0:
+                    if punct_pos >= 0:
+                        out_lines.append("".join(buf[: punct_pos + 1]))
+                        buf = buf[punct_pos + 1 :]
+                        w = w - punct_w
+                        punct_pos = -1
+                        punct_w = 0
+                    # else: no good break point, keep going (don't hard-break mid-word)
+                buf.append(c)
+                w += cw
+                if c in _BREAK_AFTER_PUNCT:
+                    punct_pos = len(buf) - 1
+                    punct_w = w
+
+        if buf:
+            out_lines.append("".join(buf))
+        result.append("\n".join(out_lines))
+    return "\n".join(result)
+
+
+def run_wrap(
+    max_width: int = 40,
+    files: list[str] | None = None,
+    dry_run: bool = False,
+):
+    """Auto-wrap long translated text lines.
+
+    Args:
+        max_width: Maximum display width per line.
+        files: List of CSV filenames to process. None = all files.
+        dry_run: If True, only show what would change.
+    """
+    progress = load_progress()
+    if not progress:
+        print("No translations found in progress file.")
+        return
+
+    modified_count = 0
+    examples = []
+
+    for key, value in list(progress.items()):
+        if files:
+            csv_file = key.split("::")[0]
+            if csv_file not in files:
+                continue
+        wrapped = wrap_text(value, max_width)
+        if wrapped != value:
+            modified_count += 1
+            if len(examples) < 5:
+                examples.append((key, value, wrapped))
+            if not dry_run:
+                progress[key] = wrapped
+
+    if dry_run:
+        print(f"Dry run: {modified_count} entries would be modified (max_width={max_width})")
+        for key, old, new in examples:
+            print(f"\n  [{key}]")
+            print(f"    Before: {old!r}")
+            print(f"    After:  {new!r}")
+        return
+
+    if modified_count == 0:
+        print("No entries need wrapping.")
+        return
+
+    save_progress(progress)
+    print(f"Updated {modified_count} entries in {PROGRESS_FILE}")
+
+    # Apply wrapped text to CSVs
+    target_files = files if files else CSV_FILES
+    available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
+
+    for csv_file in available:
+        filepath = os.path.join(TEXT_DIR, csv_file)
+        header, rows = read_csv(filepath)
+        if "zh" not in header:
+            continue
+        zh_idx = header.index("zh")
+        changed = False
+        for row in rows:
+            while len(row) < len(header):
+                row.append("")
+            key = row[0]
+            full_key = f"{csv_file}::{key}"
+            if full_key in progress and row[zh_idx].strip():
+                if row[zh_idx] != progress[full_key]:
+                    row[zh_idx] = progress[full_key]
+                    changed = True
+        if changed:
+            write_csv(filepath, header, rows)
+            print(f"  Updated {csv_file}")
+
+    print("Done.")

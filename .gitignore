@@ -5,6 +5,8 @@ wheels/
 *.egg-info
 .venv
 
+.env
+
 extracted/
 resources.gpak*
 resources_patched.gpak

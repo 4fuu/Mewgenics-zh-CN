@@ -339,6 +339,19 @@ def main():
         action="store_true",
         help="Only apply existing translations from progress file, no AI",
     )
+    wrap_parser = sub.add_parser("wrap", help="Auto-wrap long translated text lines")
+    wrap_parser.add_argument(
+        "--max-width",
+        type=int,
+        default=40,
+        help="Maximum display width per line (default: 40)",
+    )
+    wrap_parser.add_argument(
+        "--files", nargs="+", help="Only wrap specific CSV files"
+    )
+    wrap_parser.add_argument(
+        "--dry", action="store_true", help="Show what would change without modifying files"
+    )
     args = parser.parse_args()
 
     if args.command == "info":
@@ -358,6 +371,14 @@ def main():
             dry_run=args.dry,
             apply_only=args.apply_only,
         )
+    elif args.command == "wrap":
+        from translate import run_wrap
+
+        run_wrap(
+            max_width=args.max_width,
+            files=args.files,
+            dry_run=args.dry,
+        )
     elif args.command == "apply":
         cmd_apply()
     else:
@@ -366,6 +387,7 @@ def main():
         print("  1. uv run main.py extract        # Extract all files")
         print("  2. uv run main.py add-zh-column  # Add Chinese column to CSVs")
         print("  3. uv run main.py translate      # Auto-translate to Chinese")
+        print("  3.5 uv run main.py wrap          # Auto-wrap long translated lines")
         print("  4. uv run main.py pack           # Create patched GPAK")
         print("  5. uv run main.py apply          # Apply patch to game")
 
