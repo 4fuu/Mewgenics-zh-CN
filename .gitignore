@@ -13,6 +13,7 @@ resources_patched.gpak
 steam_api64.dll
 *.exe
 *.bak
+mewpatch
 
 term_candidates.json
 wrap_overflow.json
