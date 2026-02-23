@@ -340,6 +340,12 @@ def main():
         action="store_true",
         help="Only apply existing translations from progress file, no AI",
     )
+    tr_parser.add_argument(
+        "--wave-size",
+        type=int,
+        default=10,
+        help="Batches per concurrent wave (default: 10)",
+    )
     check_parser = sub.add_parser(
         "check", help="Check translations for mixed Chinese-English issues"
     )
@@ -365,6 +371,18 @@ def main():
     )
     wrap_parser.add_argument(
         "--files", nargs="+", help="Only wrap specific CSV files"
+    )
+    wrap_parser.add_argument(
+        "--npc-width",
+        type=int,
+        default=40,
+        help="Max display width for npc_dialog.csv (default: 40, independent of --max-width)",
+    )
+    wrap_parser.add_argument(
+        "--events-width",
+        type=int,
+        default=40,
+        help="Max display width for events.csv (default: 40, independent of --max-width)",
     )
     wrap_parser.add_argument(
         "--dry", action="store_true", help="Show what would change without modifying files"
@@ -402,6 +420,7 @@ def main():
             files=args.files,
             dry_run=args.dry,
             apply_only=args.apply_only,
+            wave_size=args.wave_size,
         )
     elif args.command == "check":
         from translate import run_check
@@ -414,6 +433,8 @@ def main():
             max_width=args.max_width,
             files=args.files,
             dry_run=args.dry,
+            npc_width=args.npc_width,
+            events_width=args.events_width,
         )
     elif args.command == "auto-wrap":
         from translate import run_auto_wrap

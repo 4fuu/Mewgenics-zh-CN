@@ -20,25 +20,30 @@ PROGRESS_FILE = "translation_progress.json"
 GLOSSARY_FILE = "glossary.json"
 
 CSV_FILES = [
-    "misc.csv",
-    "additions3.csv",
-    "additions2.csv",
+    # 1. 术语定义类：建立核心词汇表
+    "keyword_tooltips.csv",  # 游戏关键词定义，最先确立术语
+    "misc.csv",  # UI、地名、系统文本，基础词汇
+    "pronouns.csv",  # 代词系统（极小，结构性）
+    # 2. 核心机制类：使用已确立的关键词
+    "mutations.csv",  # 猫咪变异
+    "weather.csv",  # 天气效果
+    "furniture.csv",  # 家具
+    "enemy_abilities.csv",  # 敌人技能
+    "passives.csv",  # 被动技能
+    "abilities.csv",  # 主动技能
+    "items.csv",  # 物品
+    # 3. 世界与角色
+    "units.csv",  # 单位/角色
+    "progression.csv",  # 游戏进度
+    "teamnames.csv",  # 队伍名称
+    # 4. 补充文本
     "additions.csv",
-    "pronouns.csv",
-    "weather.csv",
-    "teamnames.csv",
-    "progression.csv",
-    "keyword_tooltips.csv",
-    "cutscene_text.csv",
-    "furniture.csv",
-    "mutations.csv",
-    "enemy_abilities.csv",
-    "units.csv",
-    "passives.csv",
-    "items.csv",
-    "events.csv",
-    "abilities.csv",
-    "npc_dialog.csv",
+    "additions2.csv",
+    "additions3.csv",
+    # 5. 叙事文本（最长，受益于前面积累的全部术语）
+    "cutscene_text.csv",  # 过场动画
+    "events.csv",  # 随机事件
+    "npc_dialog.csv",  # NPC 对话
 ]
 
 FILE_CONTEXT = {
@@ -87,60 +92,200 @@ def match_glossary(glossary: dict[str, str], entries: list[dict]) -> dict[str, s
     return matched
 
 
-def build_prompt(entries: list[dict], glossary: dict[str, str]) -> str:
+def _extract_prefix(key: str) -> str:
+    """Extract grouping prefix from a key to keep related entries together.
+
+    Examples:
+        ABILITY_CHAOSSHOT_NAME -> ABILITY_CHAOSSHOT
+        ABILITY_CHAOSSHOT_DESC -> ABILITY_CHAOSSHOT
+        ABILITY_CHAOSSHOT2_DESC -> ABILITY_CHAOSSHOT
+    """
+    suffixes = [
+        "_NAME",
+        "_DESC",
+        "_FLAVOR",
+        "_TOOLTIP",
+        "_EFFECT",
+        "_HEADER",
+        "_TITLE",
+        "_BODY",
+        "_TEXT",
+        "_SHORT",
+        "_LONG",
+        "_LABEL",
+        "_BTN",
+        "_BUTTON",
+        "_MSG",
+        "_MESSAGE",
+        "_INFO",
+        "_HINT",
+    ]
+    result = key
+    for suffix in suffixes:
+        if result.endswith(suffix):
+            result = result[: -len(suffix)]
+            break
+    # Strip trailing digits to group variants (CHAOSSHOT2 -> CHAOSSHOT)
+    # But don't strip if the last segment is entirely digits (e.g. ITEM_123)
+    parts = result.rsplit("_", 1)
+    if len(parts) == 2 and parts[1] and not parts[1].isdigit():
+        stripped = re.sub(r"\d+$", "", parts[1])
+        if stripped:
+            result = parts[0] + "_" + stripped
+    return result
+
+
+def _build_prefix_batches(
+    pending: list[tuple[int, dict]], batch_size: int
+) -> list[list[tuple[int, dict]]]:
+    """Build batches that keep entries with the same prefix together."""
+    from collections import OrderedDict
+
+    groups: OrderedDict[str, list[tuple[int, dict]]] = OrderedDict()
+    for item in pending:
+        _, entry = item
+        prefix = _extract_prefix(entry["key"])
+        if prefix not in groups:
+            groups[prefix] = []
+        groups[prefix].append(item)
+
+    batches: list[list[tuple[int, dict]]] = []
+    current_batch: list[tuple[int, dict]] = []
+
+    for _prefix, group in groups.items():
+        if current_batch and len(current_batch) + len(group) > batch_size:
+            batches.append(current_batch)
+            current_batch = []
+        if len(group) > batch_size:
+            if current_batch:
+                batches.append(current_batch)
+                current_batch = []
+            for i in range(0, len(group), batch_size):
+                batches.append(group[i : i + batch_size])
+        else:
+            current_batch.extend(group)
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def _find_reference_translations(entries: list[dict], progress: dict) -> list[dict]:
+    """Find already-translated entries with the same prefix as reference."""
+    csv_file = entries[0]["file"] if entries else ""
+    prefixes = set(_extract_prefix(e["key"]) for e in entries)
+    entry_keys = set(f"{e['file']}::{e['key']}" for e in entries)
+
+    references = []
+    for full_key, zh_text in progress.items():
+        if not zh_text or full_key in entry_keys:
+            continue
+        parts = full_key.split("::", 1)
+        if len(parts) != 2:
+            continue
+        file_name, key = parts
+        if file_name != csv_file:
+            continue
+        if _extract_prefix(key) in prefixes:
+            references.append({"key": key, "zh": zh_text})
+
+    return references[:20]
+
+
+def build_prompt(
+    entries: list[dict],
+    glossary: dict[str, str],
+    references: list[dict] | None = None,
+) -> str:
     csv_file = entries[0]["file"] if entries else ""
     context = FILE_CONTEXT.get(csv_file, "")
-
     matched = match_glossary(glossary, entries)
 
-    lines = []
-    lines.append("你是游戏《Mewgenics》的中文本地化翻译。")
-    lines.append(
-        "这是一款由Edmund McMillen制作的猫咪养成roguelike游戏，玩家收集、培育变异猫咪进行战斗。"
-    )
-    lines.append("")
+    sections = []
 
+    # Role & game context
+    sections.append(
+        "你是游戏《Mewgenics》的中文本地化翻译。\n"
+        "这是一款由Edmund McMillen制作的猫咪养成roguelike游戏，玩家收集、培育变异猫咪进行战斗。\n"
+        "游戏简介：根据你的策略，培育猫咪，组建终极喵喵大军，派他们踏上颇具深度和难度的回合制冒险之旅。"
+        "抽选能力，获得物品，改变影响数代的遗传特性，享受这款类Rogue策略游戏，"
+        "感受《以撒的结合》与《终结将至》作者的创意和设计。\n"
+        "===="
+    )
+
+    # Glossary
     if matched:
-        lines.append("【术语表】翻译时必须使用以下统一译名：")
+        glossary_lines = ["【术语表】翻译时参考使用以下译名（不强制）："]
         for en, zh in matched.items():
-            lines.append(f"  {en} = {zh}")
-        lines.append("")
+            glossary_lines.append(f"  {en} = {zh}")
+        sections.append("\n".join(glossary_lines))
 
+    # Reference translations
+    if references:
+        ref_lines = ["【参考译文】以下是同系列已翻译条目，请参考以精确理解："]
+        for ref in references:
+            zh_short = ref["zh"].replace("\n", "\\n")
+            ref_lines.append(f"  {ref['key']} → {zh_short}")
+        sections.append("\n".join(ref_lines))
+
+    # Current file context
     if context:
-        lines.append(f"【当前文件】{csv_file} — {context}")
-        lines.append("")
+        sections.append(f"【当前文件】{csv_file} — {context}")
 
-    lines.append("【翻译规则】")
-    lines.append(
-        "1. 保留所有标记标签，不翻译标签内容，包括但不限于：[m:happy] [s:1.5] [b]...[/b] [w:500] [i]...[/i] {catname} {his} {he} &nbsp; 等"
+    # Tag reference — consolidates tag explanations and preservation rules
+    sections.append(
+        "【标记标签】以下标签必须原样保留，不翻译标签内容，位置可随中文语序调整：\n"
+        "  [m:表情] — 角色表情，如 [m:happy]、[m:angry]\n"
+        "  [s:数字] — 文字缩放，如 [s:1.5]\n"
+        "  [b]...[/b] — 粗体  |  [i]...[/i] — 斜体\n"
+        "  [w:数字] — 停顿（毫秒），如 [w:500]\n"
+        "  {变量名} — 动态变量，如 {catname}、{his}、{he}\n"
+        "  &nbsp; — 不换行空格"
     )
-    lines.append("2. 保留原文中的换行符")
-    lines.append("3. 译文要自然流畅，符合中文游戏玩家的阅读习惯")
-    lines.append("4. 如果原文只是一个标点或者无需翻译，请原样返回")
-    lines.append(
-        '5. 每条原文后可能附有"(备注: ...)"，这是开发者的内部注释，仅供你理解语境，严禁将备注内容写入译文'
-    )
-    lines.append(
-        "6. 所有英文单词都必须翻译为中文，不要保留英文原文。唯一的例外是中文游戏语境下玩家习惯直接使用的英文词汇（如Boss、HP、MP、NPC、DPS等常见缩写），这类词可以保留英文"
-    )
-    lines.append("")
-    lines.append(
-        f"【输出格式】每条翻译之间用 {ENTRY_SEP} 分隔，严格按顺序输出，不要添加编号、KEY或任何额外内容。只输出译文。"
-    )
-    lines.append("")
-    lines.append(
-        f"以下共 {len(entries)} 条待翻译文本，每条格式为 [编号] KEY | 英文原文："
-    )
-    lines.append("")
 
+    # Translation rules — grouped by concern
+    sections.append(
+        "【翻译规则】\n"
+        "\n"
+        "▸ 格式\n"
+        "  - 保留所有标记标签，翻译前后标签数量必须一致\n"
+        "  - 无需保留原文换行符，按中文语序重新组织文本和标签位置\n"
+        '  - 原文后的"(备注: ...)"是开发者注释，仅供理解语境，严禁写入译文\n'
+        "\n"
+        "▸ 语言\n"
+        "  - 所有英文必须译为中文；例外：中文玩家惯用的缩写（Boss、HP、MP、NPC、DPS等）可保留\n"
+        "  - 复合条件句须拆分重组，用'当…时，若…则…'等结构衔接，避免条件堆叠\n"
+        '    ✓ "当敌人下次结束移动时，若其处于你的基础攻击范围内，则对其发动攻击。"\n'
+        '    ✗ "下次当敌人结束移动并位于你的基础攻击范围内时，攻击它。"\n'
+        "\n"
+        "▸ 风格\n"
+        "  - 完整翻译，译文要易懂、自然流畅，不得直接机翻，可联系上下文补全缺失含义\n"
+        "  - 描述文本应精炼简洁：省略可推断的主语（'该技能''你的猫咪'），直接以动词开头\n"
+        '    ✓ "对所有敌人造成5点伤害"  ✗ "该技能对所有敌人造成5点伤害"\n'
+        '    ✓ "获得+2攻击力，持续3回合"  ✗ "你的猫咪获得+2攻击力，持续3回合"'
+    )
+
+    # Output format
+    sections.append(
+        f"【输出格式】每条翻译之间用 {ENTRY_SEP} 分隔，严格按顺序输出，"
+        "不要添加编号、KEY或任何额外内容。只输出译文。"
+    )
+
+    # Input entries
+    entry_lines = [
+        f"以下共 {len(entries)} 条待翻译文本，每条格式为 [编号] KEY | 英文原文：",
+        "",
+    ]
     for i, entry in enumerate(entries):
         en_text = entry["en"].replace("\n", "\\n")
         line = f"[{i + 1}] {entry['key']} | {en_text}"
         if entry.get("notes"):
             line += f"  (备注: {entry['notes']})"
-        lines.append(line)
+        entry_lines.append(line)
+    sections.append("\n".join(entry_lines))
 
-    return "\n".join(lines)
+    return "\n\n".join(sections)
 
 
 def parse_response(response: str, expected_count: int) -> list[str]:
@@ -166,18 +311,94 @@ def parse_response(response: str, expected_count: int) -> list[str]:
     return results[:expected_count]
 
 
-def translate_batch(entries: list[dict]) -> list[str]:
+def translate_batch(
+    entries: list[dict],
+    progress: dict | None = None,
+    glossary: dict | None = None,
+) -> list[str]:
     from ai import completion
 
-    glossary = load_glossary()
-    prompt = build_prompt(entries, glossary)
+    if glossary is None:
+        glossary = load_glossary()
+    references = _find_reference_translations(entries, progress) if progress else None
+    prompt = build_prompt(entries, glossary, references)
 
     messages = [{"role": "user", "content": prompt}]
-    response = completion(messages)
+    response = completion(messages, 3000)
 
     assert response, "response is None"
 
     return parse_response(response, len(entries))
+
+
+def _extract_glossary_from_batch(
+    entries: list[dict],
+    translations: list[str],
+    glossary: dict[str, str],
+) -> dict[str, str]:
+    """Call AI to extract notable terms from a translated batch."""
+    from ai import completion1
+
+    pairs = []
+    for entry, zh in zip(entries, translations):
+        if zh:
+            pairs.append(f"  {entry['key']}: {entry['en']} → {zh}")
+
+    if not pairs or len(pairs) < 5:
+        return {}
+
+    existing = "\n".join(f"  {en} = {zh}" for en, zh in glossary.items())
+
+    prompt_lines = [
+        "你是游戏《Mewgenics》的中文本地化术语管理员。",
+        "请从以下翻译中提取【跨条目复用的通用术语】，确保后续翻译保持一致。",
+        "",
+        "【什么是术语】术语是翻译时容易产生歧义、需要统一译法的词汇，例如：",
+        "  - 有多种译法的游戏概念：Rune=符文, Cleave=劈砍, Brace=防御姿态",
+        "  - 游戏自创/特殊含义的词：creep=诡异痕迹, Bloodzerked=嗜血狂怒",
+        "  - 专有人名/地名/阵营名等需要固定的译名",
+        "",
+        "【什么不是术语】以下内容不要提取：",
+        "  - 含义明确的常用词、词组等（如 damage=伤害, attack=攻击, cat=猫咪, speed=速度，increased by=提升）",
+        "  - 单个条目的完整翻译（如某个具体技能名、物品名、关键词名的整体翻译）",
+        "  - 只在一个条目中出现一次的专有名称，或者常用词的特殊含义（water=水域）",
+        "  - CSV的key名（如 KEYWORD_xxx_NAME, ABILITY_xxx_DESC 等）",
+        "  - 已有术语表中已存在的词条",
+        "",
+        "【已有术语表】",
+        existing if existing else "  （暂无）",
+        "",
+        "【本批翻译】",
+        *pairs,
+        "",
+        "【输出格式】仅输出新术语，每行一个，格式为: English = 中文",
+        '如果没有值得添加的新术语，输出"无"。',
+    ]
+
+    messages = [{"role": "user", "content": "\n".join(prompt_lines)}]
+    try:
+        response = completion1(messages)
+    except Exception:
+        return {}
+
+    if not response or response.strip() == "无":
+        return {}
+
+    existing_lower = {k.lower() for k in glossary}
+    new_terms = {}
+    for line in response.strip().split("\n"):
+        line = line.strip().lstrip("- ").strip()
+        if "=" in line:
+            parts = line.split("=", 1)
+            en = parts[0].strip()
+            zh = parts[1].strip()
+            if en and zh and en.lower() not in existing_lower:
+                # Reject CSV key names (e.g. KEYWORD_TRANSFORM_NAME)
+                if re.match(r"^[A-Z][A-Z0-9_]{3,}$", en):
+                    continue
+                new_terms[en] = zh
+
+    return new_terms
 
 
 def load_progress() -> dict:
@@ -267,6 +488,7 @@ def run_translate(
     files: list[str] | None = None,
     dry_run: bool = False,
     apply_only: bool = False,
+    wave_size: int = 10,
 ):
     """Main translation loop.
 
@@ -276,6 +498,8 @@ def run_translate(
         dry_run: If True, only show stats without translating.
         apply_only: If True, only apply existing translations from progress
             file to CSVs without calling AI.
+        wave_size: Number of batches to run concurrently per wave.
+            After each wave completes, glossary is updated before next wave.
     """
     if not os.path.exists(TEXT_DIR):
         print(f"Error: {TEXT_DIR} not found. Run 'extract' or 'extract-text' first.")
@@ -336,7 +560,7 @@ def run_translate(
         return
 
     print(
-        f"\nTranslating {total_pending} entries (batch size: {batch_size}, 4 threads)..."
+        f"\nTranslating {total_pending} entries (batch size: {batch_size}, wave size: {wave_size})..."
     )
     print()
 
@@ -344,6 +568,7 @@ def run_translate(
     t_start = time.time()
     lock = Lock()
     has_error = False
+    glossary = load_glossary()
 
     for csv_file in available:
         header, rows, pending = collect_entries(csv_file, progress)  # type: ignore
@@ -353,47 +578,56 @@ def run_translate(
         zh_idx = header.index("zh")
         print(f"[{csv_file}] {len(pending)} entries to translate")
 
-        batches = []
-        for batch_start in range(0, len(pending), batch_size):
-            batch = pending[batch_start : batch_start + batch_size]
-            batches.append((batch_start, batch))
+        prefix_batches = _build_prefix_batches(pending, batch_size)
+        batches = list(enumerate(prefix_batches))
 
+        file_new_terms: dict[str, str] = {}
         file_translated = 0
 
-        def process_batch(batch_info):
-            batch_start, batch = batch_info
-            batch_entries = [entry for _, entry in batch]
-            results = translate_batch(batch_entries)
+        # Process batches in waves: each wave runs wave_size batches
+        # concurrently, then updates glossary snapshot before next wave
+        for wave_start in range(0, len(batches), wave_size):
+            wave = batches[wave_start : wave_start + wave_size]
 
-            if len(results) != len(batch):
-                with lock:
-                    print(
-                        f"  WARNING: translate_batch returned {len(results)} results for {len(batch)} entries"
-                    )
-                results = results[: len(batch)]
-                results.extend([""] * (len(batch) - len(results)))
+            # Fresh snapshot each wave so new terms are visible
+            glossary_snapshot = {**glossary, **file_new_terms}
+            progress_snapshot = dict(progress)
 
-            return batch_start, batch, results
+            def process_batch(
+                batch_info, _glossary=glossary_snapshot, _progress=progress_snapshot
+            ):
+                batch_idx, batch = batch_info
+                batch_entries = [entry for _, entry in batch]
+                results = translate_batch(batch_entries, _progress, _glossary)
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {executor.submit(process_batch, b): b for b in batches}
-
-            for future in as_completed(futures):
-                if has_error:
-                    break
-
-                try:
-                    batch_start, batch, results = future.result()
-                except Exception as e:
+                if len(results) != len(batch):
                     with lock:
-                        print(f"\n  ERROR in translate_batch(): {e}")
-                        print("  Saving progress and stopping.")
-                        save_progress(progress)
-                        write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
-                        has_error = True
-                    break
+                        print(
+                            f"  WARNING: translate_batch returned {len(results)} results for {len(batch)} entries"
+                        )
+                    results = results[: len(batch)]
+                    results.extend([""] * (len(batch) - len(results)))
 
-                with lock:
+                return batch_idx, batch, results
+
+            with ThreadPoolExecutor(max_workers=wave_size) as executor:
+                futures = {executor.submit(process_batch, b): b for b in wave}
+
+                for future in as_completed(futures):
+                    if has_error:
+                        break
+
+                    try:
+                        batch_idx, batch, results = future.result()
+                    except Exception as e:
+                        with lock:
+                            print(f"\n  ERROR in translate_batch(): {e}")
+                            print("  Saving progress and stopping.")
+                            save_progress(progress)
+                            write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
+                            has_error = True
+                        break
+
                     for (row_idx, entry), zh_text in zip(batch, results):
                         if zh_text:
                             rows[row_idx][zh_idx] = zh_text
@@ -407,6 +641,42 @@ def run_translate(
                     print(
                         f"  [{file_translated}/{len(pending)}] +{count} ({elapsed:.0f}s)"
                     )
+
+                    # Extract glossary terms (main thread only, sequential)
+                    batch_entries = [entry for _, entry in batch]
+                    latest_glossary = {**glossary, **file_new_terms}
+                    new_terms = _extract_glossary_from_batch(
+                        batch_entries, results, latest_glossary
+                    )
+                    if new_terms:
+                        # Case-insensitive dedup: skip if key already exists
+                        existing_lower = {k.lower() for k in glossary} | {
+                            k.lower() for k in file_new_terms
+                        }
+                        new_terms = {
+                            k: v
+                            for k, v in new_terms.items()
+                            if k.lower() not in existing_lower
+                        }
+                    if new_terms:
+                        file_new_terms.update(new_terms)
+                        terms_str = ", ".join(f"{k}={v}" for k, v in new_terms.items())
+                        print(f"  📚 新术语: {terms_str}")
+
+            if has_error:
+                break
+
+        # Merge accumulated glossary terms after all batches of this file
+        if file_new_terms:
+            # Case-insensitive dedup before merging into main glossary
+            glossary_lower = {k.lower(): k for k in glossary}
+            for en, zh in file_new_terms.items():
+                existing_key = glossary_lower.get(en.lower())
+                if existing_key is None:
+                    glossary[en] = zh
+                    glossary_lower[en.lower()] = en
+            save_glossary(glossary)
+            print(f"  📚 {csv_file}: 共新增 {len(file_new_terms)} 条术语")
 
         if has_error:
             return
@@ -523,6 +793,8 @@ def run_wrap(
     max_width: int = 40,
     files: list[str] | None = None,
     dry_run: bool = False,
+    npc_width: int = 40,
+    events_width: int = 40,
 ):
     """Auto-wrap long translated text lines.
 
@@ -530,6 +802,8 @@ def run_wrap(
         max_width: Maximum display width per line.
         files: List of CSV filenames to process. None = all files.
         dry_run: If True, only show what would change.
+        npc_width: Width for npc_dialog.csv (independent of max_width).
+        events_width: Width for events.csv (independent of max_width).
     """
     progress = load_progress()
     if not progress:
@@ -556,11 +830,17 @@ def run_wrap(
     examples = []
 
     for key, value in list(progress.items()):
+        csv_file = key.split("::")[0]
         if files:
-            csv_file = key.split("::")[0]
             if csv_file not in files:
                 continue
-        wrapped, overflow = wrap_text(value, max_width)
+        if csv_file == "npc_dialog.csv":
+            entry_width = npc_width
+        elif csv_file == "events.csv":
+            entry_width = events_width
+        else:
+            entry_width = max_width
+        wrapped, overflow = wrap_text(value, entry_width)
         if overflow:
             overflow_entries[key] = value
         if wrapped != value:
@@ -690,9 +970,7 @@ def run_auto_wrap(max_width: int = 40, batch_size: int = 30):
         lines.append("1. 只修改标记了←的超宽行，在语义自然的位置插入换行")
         lines.append("2. 没有标点可断的长句，直接在词语之间断行即可")
         lines.append(f"3. 断行后每行宽度必须≤{max_width}（中文字符=2，其他=1）")
-        lines.append(
-            "4. [img:xxx]、[b]...[/b]、{xxx} 等标记标签宽度为0，不要拆开"
-        )
+        lines.append("4. [img:xxx]、[b]...[/b]、{xxx} 等标记标签宽度为0，不要拆开")
         lines.append("5. 不要修改文字内容，只添加换行")
         lines.append("6. 输出中不要包含←标记")
         lines.append("")
@@ -701,9 +979,7 @@ def run_auto_wrap(max_width: int = 40, batch_size: int = 30):
             "严格按顺序输出，只输出处理后的完整文本。"
         )
         lines.append("")
-        lines.append(
-            f"以下共 {len(prompt_entries)} 条文本（用 ---- 分隔每条）："
-        )
+        lines.append(f"以下共 {len(prompt_entries)} 条文本（用 ---- 分隔每条）：")
         lines.append("")
 
         for j, (k, v) in enumerate(prompt_entries):
