@@ -7,3 +7,6 @@ var TranslationProgressJSON []byte
 
 //go:embed MaoKenZhuYuanTi-MaokenZhuyuanTi-2.ttf
 var FontTTF []byte
+
+//go:embed unicodefont.swf.bak
+var OriginalFontSWF []byte

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 
 	mewpatch "github.com/4fuu/Mewgenics-zh-CN"
 
@@ -354,6 +355,180 @@ func segmentsToContours(segments sfnt.Segments, scale float64) []swfContour {
 	return contours
 }
 
+// ---------- DefineFont3 解析 ----------
+
+// parseDefineFont3Glyphs 从 DefineFont3 标签数据中提取字形信息
+func parseDefineFont3Glyphs(data []byte) (codes []uint16, shapesData [][]byte, advances []int16, ascent, descent uint16, err error) {
+	if len(data) < 6 {
+		return nil, nil, nil, 0, 0, fmt.Errorf("DefineFont3 数据太短")
+	}
+
+	// FontID: U16
+	// flags: U8
+	// languageCode: U8
+	// fontNameLen: U8
+	flags := data[2]
+	hasLayout := flags&0x80 != 0
+	wideOffsets := flags&0x08 != 0
+	// wideCodes := flags&0x04 != 0 // DefineFont3 始终使用 WideCodes
+
+	fontNameLen := int(data[4])
+	pos := 5 + fontNameLen
+
+	if pos+2 > len(data) {
+		return nil, nil, nil, 0, 0, fmt.Errorf("DefineFont3 数据截断（numGlyphs 处）")
+	}
+	numGlyphs := int(binary.LittleEndian.Uint16(data[pos:]))
+	pos += 2
+
+	if numGlyphs == 0 {
+		return nil, nil, nil, 0, 0, nil
+	}
+
+	// 读取偏移表 (numGlyphs+1 个偏移)
+	offsets := make([]int, numGlyphs+1)
+	if wideOffsets {
+		needed := (numGlyphs + 1) * 4
+		if pos+needed > len(data) {
+			return nil, nil, nil, 0, 0, fmt.Errorf("DefineFont3 数据截断（偏移表处）")
+		}
+		for i := 0; i <= numGlyphs; i++ {
+			offsets[i] = int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+		}
+	} else {
+		needed := (numGlyphs + 1) * 2
+		if pos+needed > len(data) {
+			return nil, nil, nil, 0, 0, fmt.Errorf("DefineFont3 数据截断（偏移表处）")
+		}
+		for i := 0; i <= numGlyphs; i++ {
+			offsets[i] = int(binary.LittleEndian.Uint16(data[pos:]))
+			pos += 2
+		}
+	}
+
+	// shape 数据的基准位置 = 偏移表起始位置
+	shapeBase := pos - offsets[0]
+
+	// 提取每个字形的 shape 数据
+	shapesData = make([][]byte, numGlyphs)
+	for i := 0; i < numGlyphs; i++ {
+		start := shapeBase + offsets[i]
+		end := shapeBase + offsets[i+1]
+		if start < 0 || end > len(data) || start > end {
+			shapesData[i] = emptyShape()
+			continue
+		}
+		shapeSlice := make([]byte, end-start)
+		copy(shapeSlice, data[start:end])
+		shapesData[i] = shapeSlice
+	}
+
+	// 跳到 code table 的位置
+	pos = shapeBase + offsets[numGlyphs]
+
+	// 读取 CodeTable: numGlyphs x U16
+	if pos+numGlyphs*2 > len(data) {
+		return nil, nil, nil, 0, 0, fmt.Errorf("DefineFont3 数据截断（CodeTable 处）")
+	}
+	codes = make([]uint16, numGlyphs)
+	for i := 0; i < numGlyphs; i++ {
+		codes[i] = binary.LittleEndian.Uint16(data[pos:])
+		pos += 2
+	}
+
+	// 读取 Layout 信息
+	if hasLayout {
+		if pos+4 > len(data) {
+			return codes, shapesData, nil, 0, 0, nil
+		}
+		ascent = binary.LittleEndian.Uint16(data[pos:])
+		pos += 2
+		descent = binary.LittleEndian.Uint16(data[pos:])
+		pos += 2
+		pos += 2 // leading (S16)
+
+		// AdvanceTable: numGlyphs x S16
+		if pos+numGlyphs*2 > len(data) {
+			return codes, shapesData, nil, ascent, descent, nil
+		}
+		advances = make([]int16, numGlyphs)
+		for i := 0; i < numGlyphs; i++ {
+			advances[i] = int16(binary.LittleEndian.Uint16(data[pos:]))
+			pos += 2
+		}
+
+		// 跳过 BoundsTable: numGlyphs x RECT
+		for i := 0; i < numGlyphs; i++ {
+			if pos >= len(data) {
+				break
+			}
+			nbits := int(data[pos] >> 3)
+			var rectSize int
+			if nbits == 0 {
+				rectSize = 1
+			} else {
+				rectSize = (5 + nbits*4 + 7) / 8
+			}
+			pos += rectSize
+		}
+		// KerningCount: U16 (不需要读取)
+	}
+
+	return codes, shapesData, advances, ascent, descent, nil
+}
+
+// ---------- 字形合并 ----------
+
+type glyphEntry struct {
+	shape   []byte
+	advance int16
+}
+
+// mergeGlyphs 合并原始字形和新字形，新字形覆盖原始字形
+func mergeGlyphs(origCodes []uint16, origShapes [][]byte, origAdvances []int16,
+	newCodes []uint16, newShapes [][]byte, newAdvances []int16) ([]uint16, [][]byte, []int16) {
+
+	m := make(map[uint16]glyphEntry)
+
+	// 先填入原始字形
+	for i, c := range origCodes {
+		var adv int16
+		if i < len(origAdvances) {
+			adv = origAdvances[i]
+		}
+		m[c] = glyphEntry{shape: origShapes[i], advance: adv}
+	}
+
+	// 用新字形覆盖
+	for i, c := range newCodes {
+		var adv int16
+		if i < len(newAdvances) {
+			adv = newAdvances[i]
+		}
+		m[c] = glyphEntry{shape: newShapes[i], advance: adv}
+	}
+
+	// 按 codepoint 排序
+	sortedCodes := make([]uint16, 0, len(m))
+	for c := range m {
+		sortedCodes = append(sortedCodes, c)
+	}
+	sort.Slice(sortedCodes, func(i, j int) bool { return sortedCodes[i] < sortedCodes[j] })
+
+	mergedCodes := make([]uint16, len(sortedCodes))
+	mergedShapes := make([][]byte, len(sortedCodes))
+	mergedAdvances := make([]int16, len(sortedCodes))
+	for i, c := range sortedCodes {
+		e := m[c]
+		mergedCodes[i] = c
+		mergedShapes[i] = e.shape
+		mergedAdvances[i] = e.advance
+	}
+
+	return mergedCodes, mergedShapes, mergedAdvances
+}
+
 // ---------- SWF DefineFont3 building ----------
 
 func buildDefineFont3(fontID uint16, fontNameBytes []byte, codes []uint16, shapesData [][]byte, advances []int16, ascent, descent uint16) []byte {
@@ -505,30 +680,19 @@ func cmdReplaceFont() {
 		os.Exit(1)
 	}
 
-	fmt.Println("转换 TTF 字形...")
-	codes, shapesData, advances, ascent, descent, err := convertTTFGlyphs(mewpatch.FontTTF)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("读取 unicodefont.swf...")
-	origData, err := os.ReadFile(swfPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		os.Exit(1)
-	}
+	// 使用内嵌的原始 SWF 获取原始字形
+	fmt.Println("解析内嵌原始字体...")
+	origData := mewpatch.OriginalFontSWF
 
 	sig := string(origData[:3])
 	origVer := origData[3]
-	_ = binary.LittleEndian.Uint32(origData[4:8])
 
 	var body []byte
 	switch sig {
 	case "CWS":
 		r, err := zlib.NewReader(bytes.NewReader(origData[8:]))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "错误: 解压 SWF 失败: %v\n", err)
+			fmt.Fprintf(os.Stderr, "错误: 解压内嵌 SWF 失败: %v\n", err)
 			os.Exit(1)
 		}
 		body, err = io.ReadAll(r)
@@ -551,9 +715,12 @@ func cmdReplaceFont() {
 
 	tags := parseSWFTags(body, headerSize)
 
-	// 找到原始字体 ID 和名称
+	// 找到原始字体 ID、名称，并提取原始字形
 	var origFontID uint16
 	var origFontName []byte
+	var origCodes []uint16
+	var origShapes [][]byte
+	var origAdvances []int16
 	for _, tag := range tags {
 		if tag.tagType == 75 { // DefineFont3
 			data := body[tag.offset+tag.headerLen : tag.offset+tag.headerLen+tag.dataLen]
@@ -562,6 +729,15 @@ func cmdReplaceFont() {
 			origFontName = data[5 : 5+nlen]
 			fontNameStr := string(origFontName)
 			fmt.Printf("  原始字体: ID=%d, name=\"%s\"\n", origFontID, fontNameStr)
+
+			// 解析原始字形
+			var err error
+			origCodes, origShapes, origAdvances, _, _, err = parseDefineFont3Glyphs(data)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "错误: 解析原始字形失败: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("  原始字形数: %d\n", len(origCodes))
 			break
 		}
 	}
@@ -570,6 +746,31 @@ func cmdReplaceFont() {
 		fmt.Fprintln(os.Stderr, "错误: 未在 SWF 中找到 DefineFont3")
 		os.Exit(1)
 	}
+
+	// 转换中文 TTF 字形
+	fmt.Println("转换 TTF 字形...")
+	newCodes, newShapes, newAdvances, ascent, descent, err := convertTTFGlyphs(mewpatch.FontTTF)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 合并字形：中文字体优先，原始字形作为后备
+	fmt.Println("合并字形...")
+	newCodeSet := make(map[uint16]bool, len(newCodes))
+	for _, c := range newCodes {
+		newCodeSet[c] = true
+	}
+	origOnly := 0
+	for _, c := range origCodes {
+		if !newCodeSet[c] {
+			origOnly++
+		}
+	}
+	fmt.Printf("  中文字体字形: %d, 原始后备字形: %d\n", len(newCodes), origOnly)
+
+	codes, shapesData, advances := mergeGlyphs(origCodes, origShapes, origAdvances, newCodes, newShapes, newAdvances)
+	fmt.Printf("  合并后总字形数: %d\n", len(codes))
 
 	// 构建新标签
 	font3Data := buildDefineFont3(origFontID, origFontName, codes, shapesData, advances, ascent, descent)
@@ -609,9 +810,7 @@ func cmdReplaceFont() {
 		os.Exit(1)
 	}
 
-	origSize := len(origData)
 	newSize := out.Len()
-	fmt.Printf("完成。已替换 %s 中的字体\n", unicodeSWF)
-	fmt.Printf("  %.1f MB -> %.1f MB\n", float64(origSize)/1024/1024, float64(newSize)/1024/1024)
-	fmt.Printf("  字形数: %d\n", len(codes))
+	fmt.Printf("完成。已写入 %s\n", unicodeSWF)
+	fmt.Printf("  大小: %.1f MB, 字形数: %d\n", float64(newSize)/1024/1024, len(codes))
 }

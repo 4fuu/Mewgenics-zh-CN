@@ -351,6 +351,67 @@ def build_font_align_zones(font_id, num_glyphs):
     return data
 
 
+def parse_define_font3_glyphs(data):
+    """Parse a DefineFont3 tag's binary data and extract glyph info.
+
+    Returns (codes, shapes_data, advances, ascent, descent).
+    """
+    pos = 0
+    # FontID
+    pos += 2  # skip font_id
+    flags = data[pos]; pos += 1
+    has_layout = bool(flags & 0x80)
+    wide_offsets = bool(flags & 0x08)
+    # wide_codes is always true for DefineFont3
+    pos += 1  # LanguageCode
+    name_len = data[pos]; pos += 1
+    pos += name_len  # FontName
+
+    num_glyphs = struct.unpack_from("<H", data, pos)[0]; pos += 2
+
+    if num_glyphs == 0:
+        return [], [], [], 0, 0
+
+    # OffsetTable: NumGlyphs + 1 entries (last is CodeTableOffset)
+    offset_table_start = pos
+    offsets = []
+    if wide_offsets:
+        for i in range(num_glyphs + 1):
+            offsets.append(struct.unpack_from("<I", data, pos)[0]); pos += 4
+    else:
+        for i in range(num_glyphs + 1):
+            offsets.append(struct.unpack_from("<H", data, pos)[0]); pos += 2
+
+    # Shape data: offsets are relative to offset_table_start
+    shapes_data = []
+    for i in range(num_glyphs):
+        shape_start = offset_table_start + offsets[i]
+        shape_end = offset_table_start + offsets[i + 1]
+        shapes_data.append(data[shape_start:shape_end])
+
+    # CodeTable starts after shape data
+    code_table_pos = offset_table_start + offsets[num_glyphs]
+    codes = []
+    for i in range(num_glyphs):
+        codes.append(struct.unpack_from("<H", data, code_table_pos)[0])
+        code_table_pos += 2
+
+    ascent = 0
+    descent = 0
+    advances = []
+    if has_layout:
+        ascent = struct.unpack_from("<H", data, code_table_pos)[0]; code_table_pos += 2
+        descent = struct.unpack_from("<H", data, code_table_pos)[0]; code_table_pos += 2
+        code_table_pos += 2  # skip Leading (S16)
+        for i in range(num_glyphs):
+            advances.append(struct.unpack_from("<h", data, code_table_pos)[0])
+            code_table_pos += 2
+    else:
+        advances = [0] * num_glyphs
+
+    return codes, shapes_data, advances, ascent, descent
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Replace unicodefont.swf font with a TTF"
@@ -375,25 +436,15 @@ def main():
         print(f"Error: {args.font} not found.")
         return
 
-    print(f"Reading TTF: {args.font} ...")
-    ttf = TTFont(args.font)
-    upm = ttf["head"].unitsPerEm
-    scale = SWF_EM / upm
-    print(f"  unitsPerEm: {upm}, scale factor: {scale:.4f}")
+    # 优先读取备份文件以获取原始字形
+    if os.path.exists(UNICODE_SWF_BAK):
+        orig_swf_path = UNICODE_SWF_BAK
+        print(f"Reading original font from backup: {UNICODE_SWF_BAK} ...")
+    else:
+        orig_swf_path = UNICODE_SWF
+        print(f"Reading original font from: {UNICODE_SWF} ...")
 
-    hhea = ttf["hhea"]
-    ascent_swf = min(abs(round(hhea.ascent * scale)), 65535)
-    descent_swf = min(abs(round(hhea.descent * scale)), 65535)
-    print(f"  ascent: {ascent_swf}, descent: {descent_swf}")
-
-    cmap = ttf.getBestCmap()
-    glyf_table = ttf["glyf"]
-    hmtx = ttf["hmtx"]
-
-    print(f"  cmap entries: {len(cmap)}")
-
-    print("Reading original unicodefont.swf ...")
-    with open(UNICODE_SWF, "rb") as f:
+    with open(orig_swf_path, "rb") as f:
         orig_sig = f.read(3)
         orig_ver = struct.unpack("<B", f.read(1))[0]
         orig_flen = struct.unpack("<I", f.read(4))[0]
@@ -428,6 +479,7 @@ def main():
 
     orig_font_id = None
     orig_font_name = None
+    orig_font_tag_data = None
     for tag_type, o, hl, tl in tags:
         if tag_type == 75:
             data = orig_body[o + hl : o + hl + tl]
@@ -437,6 +489,7 @@ def main():
             orig_font_name_str = orig_font_name.decode("utf-8", "replace").rstrip(
                 "\x00"
             )
+            orig_font_tag_data = data
             print(f'  Original font: ID={orig_font_id}, name="{orig_font_name_str}"')
             break
 
@@ -444,10 +497,36 @@ def main():
         print("Error: No DefineFont3 found in unicodefont.swf")
         return
 
-    print("Converting glyphs ...")
-    codes = []
-    shapes_data = []
-    advances = []
+    # Parse original font glyphs
+    orig_codes, orig_shapes, orig_advances, orig_ascent, orig_descent = (
+        parse_define_font3_glyphs(orig_font_tag_data)
+    )
+    print(f"  Original glyphs: {len(orig_codes)}")
+
+    # Build merged glyph dict from original font (codepoint -> (shape, advance))
+    merged = {}
+    for i, cp in enumerate(orig_codes):
+        merged[cp] = (orig_shapes[i], orig_advances[i])
+
+    print(f"\nReading TTF: {args.font} ...")
+    ttf = TTFont(args.font)
+    upm = ttf["head"].unitsPerEm
+    scale = SWF_EM / upm
+    print(f"  unitsPerEm: {upm}, scale factor: {scale:.4f}")
+
+    hhea = ttf["hhea"]
+    ascent_swf = min(abs(round(hhea.ascent * scale)), 65535)
+    descent_swf = min(abs(round(hhea.descent * scale)), 65535)
+    print(f"  ascent: {ascent_swf}, descent: {descent_swf}")
+
+    cmap = ttf.getBestCmap()
+    glyf_table = ttf["glyf"]
+    hmtx = ttf["hmtx"]
+
+    print(f"  cmap entries: {len(cmap)}")
+
+    print("Converting Chinese font glyphs ...")
+    cn_count = 0
     failed = 0
 
     sorted_codepoints = sorted(cp for cp in cmap.keys() if cp <= 0xFFFF)
@@ -489,11 +568,20 @@ def main():
             else:
                 shape_bytes = encode_shape(contours)
 
-        codes.append(cp)
-        shapes_data.append(shape_bytes)
-        advances.append(adv_swf)
+        merged[cp] = (shape_bytes, adv_swf)
+        cn_count += 1
 
-    print(f"  Converted {len(codes)} glyphs ({failed} failed)")
+    print(f"  Converted {cn_count} Chinese font glyphs ({failed} failed)")
+
+    # Sort merged glyphs by codepoint
+    sorted_cps = sorted(merged.keys())
+    codes = sorted_cps
+    shapes_data = [merged[cp][0] for cp in sorted_cps]
+    advances = [merged[cp][1] for cp in sorted_cps]
+
+    orig_only = len(codes) - cn_count
+    print(f"\nMerged font: {len(codes)} glyphs total")
+    print(f"  Chinese font: {cn_count}, original fallback: {orig_only}")
 
     font3_data = build_define_font3(
         orig_font_id,
