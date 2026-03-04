@@ -795,6 +795,7 @@ def run_wrap(
     dry_run: bool = False,
     npc_width: int = 40,
     events_width: int = 40,
+    abilities_width: int = 40,
 ):
     """Auto-wrap long translated text lines.
 
@@ -804,6 +805,7 @@ def run_wrap(
         dry_run: If True, only show what would change.
         npc_width: Width for npc_dialog.csv (independent of max_width).
         events_width: Width for events.csv (independent of max_width).
+        abilities_width: Width for abilities.csv (independent of max_width).
     """
     progress = load_progress()
     if not progress:
@@ -838,6 +840,8 @@ def run_wrap(
             entry_width = npc_width
         elif csv_file == "events.csv":
             entry_width = events_width
+        elif csv_file == "abilities.csv":
+            entry_width = abilities_width
         else:
             entry_width = max_width
         wrapped, overflow = wrap_text(value, entry_width)

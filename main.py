@@ -385,6 +385,12 @@ def main():
         help="Max display width for events.csv (default: 40, independent of --max-width)",
     )
     wrap_parser.add_argument(
+        "--abilities-width",
+        type=int,
+        default=40,
+        help="Max display width for abilities.csv (default: 40, independent of --max-width)",
+    )
+    wrap_parser.add_argument(
         "--dry", action="store_true", help="Show what would change without modifying files"
     )
     auto_wrap_parser = sub.add_parser(
@@ -435,6 +441,7 @@ def main():
             dry_run=args.dry,
             npc_width=args.npc_width,
             events_width=args.events_width,
+            abilities_width=args.abilities_width,
         )
     elif args.command == "auto-wrap":
         from translate import run_auto_wrap
