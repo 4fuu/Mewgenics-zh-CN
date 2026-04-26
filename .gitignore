@@ -17,3 +17,7 @@ mewpatch
 
 term_candidates.json
 wrap_overflow.json
+
+# 临时脚本与中间文件
+_*.py
+*.csv.append*

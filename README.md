@@ -71,7 +71,7 @@
 
 ### 补丁工具（Go）
 
-补丁工具是一个 Go 程序，编译为单个独立二进制文件 `mewpatch.exe`。翻译数据（`translation_progress.json`）和中文字体（`MaoKenZhuYuanTi-MaokenZhuyuanTi-2.ttf`）通过 `go:embed` 嵌入到二进制中，用户无需额外文件。
+补丁工具是一个 Go 程序，编译为单个独立二进制文件 `mewpatch.exe`。翻译数据（`translation_progress.json`）、中文字体（`MaoKenZhuYuanTi-MaokenZhuyuanTi-2.ttf`）以及游戏原始字体备份（`unicodefont.swf.bak`，作为 CJK fallback）通过 `go:embed` 嵌入到二进制中，用户无需额外文件。
 
 #### 编译
 
@@ -81,6 +81,11 @@
 go mod tidy                        # 解析依赖
 go build -o mewpatch.exe ./cmd/    # 编译
 ```
+
+> ⚠️ **编译前置条件**：仓库未包含 `unicodefont.swf.bak`（属于游戏原始资源，体积大且涉及版权）。
+> 编译前需要从你的游戏目录手动复制：
+> 1. 用 `mewpatch extract` 解包游戏的 `resources.gpak`
+> 2. 将 `extracted/swfs/unicodefont.swf` 复制为本仓库根目录下的 `unicodefont.swf.bak`
 
 #### 命令
 
@@ -232,31 +237,34 @@ uv run replace_unicode_font.py --restore           # 恢复原始字体
 
 ## 汉化目标文件
 
-所有游戏文本存放在 `data/text/` 下的 19 个 CSV 文件中（共约 6.4 MB），编码为 UTF-8 BOM：
+> **2026/4 版本起**：游戏将所有文本合并到单个 `data/text/combined.csv`（约 6.4 MB，UTF-8 BOM）。
+> 文件中以 `// 文件名.csv` 注释行作为 section 分隔，`translation_progress.json` 仍按 `文件名::KEY` 索引，工具会自动识别 section。
 
-| 文件 | 大小 | 内容 |
-|------|------|------|
-| `events.csv` | 1.7 MB | 随机事件文本（战斗、探索、剧情事件） |
-| `npc_dialog.csv` | 1.4 MB | NPC 对话 |
-| `abilities.csv` | 1.0 MB | 主动技能名称和效果描述 |
-| `items.csv` | 680 KB | 物品名称和描述 |
-| `passives.csv` | 596 KB | 被动技能名称和效果描述 |
-| `units.csv` | 271 KB | 单位/角色名称和描述 |
-| `keyword_tooltips.csv` | 146 KB | 游戏关键词的工具提示说明 |
-| `cutscene_text.csv` | 134 KB | 过场动画文本 |
-| `furniture.csv` | 110 KB | 家具名称和描述 |
-| `misc.csv` | 106 KB | 杂项文本（UI、地名、系统提示等） |
-| `mutations.csv` | 91 KB | 猫咪变异名称和效果描述 |
-| `progression.csv` | 54 KB | 游戏进度相关（解锁提示、成就等） |
-| `enemy_abilities.csv` | 46 KB | 敌人技能名称和描述 |
-| `additions.csv` | 41 KB | 追加文本（含语言元数据） |
-| `weather.csv` | 39 KB | 天气名称和描述 |
-| `teamnames.csv` | 34 KB | 队伍名称 |
-| `additions2.csv` | 20 KB | 追加文本 2 |
-| `pronouns.csv` | 3 KB | 代词系统（动态替换角色性别代词） |
-| `additions3.csv` | 0.6 KB | 追加文本 3 |
+`combined.csv` 包含的 19 个 section：
 
-运行 `uv run main.py translate --dry` 查看各文件翻译完成度。
+| section | 内容 |
+|---------|------|
+| `events.csv` | 随机事件文本（战斗、探索、剧情事件） |
+| `npc_dialog.csv` | NPC 对话 |
+| `abilities.csv` | 主动技能名称和效果描述 |
+| `items.csv` | 物品名称和描述 |
+| `passives.csv` | 被动技能名称和效果描述 |
+| `units.csv` | 单位/角色名称和描述 |
+| `keyword_tooltips.csv` | 游戏关键词的工具提示说明 |
+| `cutscene_text.csv` | 过场动画文本 |
+| `furniture.csv` | 家具名称和描述 |
+| `misc.csv` | 杂项文本（UI、地名、系统提示等） |
+| `mutations.csv` | 猫咪变异名称和效果描述 |
+| `progression.csv` | 游戏进度相关（解锁提示、成就等） |
+| `enemy_abilities.csv` | 敌人技能名称和描述 |
+| `additions.csv` | 追加文本（含语言元数据） |
+| `weather.csv` | 天气名称和描述 |
+| `teamnames.csv` | 队伍名称 |
+| `additions2.csv` | 追加文本 2 |
+| `pronouns.csv` | 代词系统（动态替换角色性别代词） |
+| `additions3.csv` | 追加文本 3 |
+
+运行 `uv run main.py translate --dry` 查看各 section 翻译完成度。
 
 ## 项目文件
 

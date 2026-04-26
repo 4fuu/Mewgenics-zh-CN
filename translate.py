@@ -18,6 +18,7 @@ from threading import Lock
 TEXT_DIR = "extracted/data/text"
 PROGRESS_FILE = "translation_progress.json"
 GLOSSARY_FILE = "glossary.json"
+COMBINED_CSV = "combined.csv"
 
 CSV_FILES = [
     # 1. 术语定义类：建立核心词汇表
@@ -69,6 +70,43 @@ FILE_CONTEXT = {
 }
 
 ENTRY_SEP = "⟨SEP⟩"
+
+
+def _has_combined_csv() -> bool:
+    """Check if combined.csv exists."""
+    return os.path.exists(os.path.join(TEXT_DIR, COMBINED_CSV))
+
+
+def _parse_section_marker(key: str) -> str | None:
+    """Parse section marker like '// abilities.csv' and return the filename."""
+    if key.startswith("// ") and key.endswith(".csv"):
+        return key[3:]  # strip "// " prefix
+    return None
+
+
+def _get_section_for_row(row_idx: int, section_starts: list[tuple[int, str]]) -> str:
+    """Return the section filename for a given row index.
+
+    Rows before the first section marker belong to 'additions.csv'.
+    """
+    section = "additions.csv"
+    for start_idx, name in section_starts:
+        if row_idx >= start_idx:
+            section = name
+        else:
+            break
+    return section
+
+
+def _read_combined_section_starts(rows: list[list[str]]) -> list[tuple[int, str]]:
+    """Scan combined.csv rows and return (row_index, section_filename) pairs."""
+    starts: list[tuple[int, str]] = []
+    for i, row in enumerate(rows):
+        if row and row[0]:
+            section = _parse_section_marker(row[0])
+            if section:
+                starts.append((i, section))
+    return starts
 
 
 def load_glossary() -> dict[str, str]:
@@ -435,9 +473,18 @@ def collect_entries(
 
     Returns (header, rows, pending) where pending is a list of
     (row_index, entry_dict) for rows that need translation.
+
+    If combined.csv exists, reads from it and filters rows belonging
+    to the section matching csv_file.
     """
-    filepath = os.path.join(TEXT_DIR, csv_file)
-    header, rows = read_csv(filepath)
+    if _has_combined_csv():
+        filepath = os.path.join(TEXT_DIR, COMBINED_CSV)
+        header, rows = read_csv(filepath)
+        section_starts = _read_combined_section_starts(rows)
+    else:
+        filepath = os.path.join(TEXT_DIR, csv_file)
+        header, rows = read_csv(filepath)
+        section_starts = None
 
     en_idx = header.index("en")
     notes_idx = header.index("notes") if "notes" in header else -1
@@ -453,6 +500,11 @@ def collect_entries(
     for i, row in enumerate(rows):
         while len(row) < len(header):
             row.append("")
+
+        # When using combined.csv, skip rows not in the target section
+        if section_starts is not None:
+            if _get_section_for_row(i, section_starts) != csv_file:
+                continue
 
         key = row[0]
         en_text = row[en_idx] if len(row) > en_idx else ""
@@ -508,7 +560,11 @@ def run_translate(
     progress = load_progress()
     target_files = files if files else CSV_FILES
 
-    available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
+    use_combined = _has_combined_csv()
+    if use_combined:
+        available = list(target_files)
+    else:
+        available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
     if not available:
         print("No CSV files found.")
         return
@@ -517,29 +573,83 @@ def run_translate(
     total_done = 0
     file_stats = []
 
-    for csv_file in available:
-        header, rows, pending = collect_entries(csv_file, progress)  # type: ignore
-        zh_idx = header.index("zh") if "zh" in header else -1
-        done_in_file = sum(
-            1
-            for row in rows
-            if zh_idx >= 0
-            and len(row) > zh_idx
-            and row[zh_idx].strip()
-            and not row[0].startswith("//")
-            and row[0].strip()
-        )
-        en_idx = header.index("en")
-        translatable = sum(
-            1
-            for row in rows
-            if len(row) > en_idx and row[en_idx].strip() and not row[0].startswith("//")
-        )
-        if done_in_file > 0:
-            write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
-        total_pending += len(pending)
-        total_done += done_in_file
-        file_stats.append((csv_file, translatable, done_in_file, len(pending)))
+    # When using combined.csv, read it once and apply all sections
+    if use_combined:
+        combined_path = os.path.join(TEXT_DIR, COMBINED_CSV)
+        combined_header, combined_rows = read_csv(combined_path)
+        combined_zh_idx = combined_header.index("zh") if "zh" in combined_header else -1
+        combined_en_idx = combined_header.index("en")
+        section_starts = _read_combined_section_starts(combined_rows)
+
+        if combined_zh_idx == -1:
+            combined_header.append("zh")
+            combined_zh_idx = len(combined_header) - 1
+            for row in combined_rows:
+                row.append("")
+
+        # Apply all known translations to combined_rows in one pass
+        for i, row in enumerate(combined_rows):
+            while len(row) < len(combined_header):
+                row.append("")
+            key = row[0]
+            if not key.strip() or key.startswith("//"):
+                continue
+            section = _get_section_for_row(i, section_starts)
+            full_key = f"{section}::{key}"
+            if full_key in progress and progress[full_key]:
+                row[combined_zh_idx] = progress[full_key]
+
+        # Gather per-file stats
+        for csv_file in available:
+            section_rows = [
+                row for i, row in enumerate(combined_rows)
+                if _get_section_for_row(i, section_starts) == csv_file
+            ]
+            done_in_file = sum(
+                1
+                for row in section_rows
+                if combined_zh_idx >= 0
+                and len(row) > combined_zh_idx
+                and row[combined_zh_idx].strip()
+                and not row[0].startswith("//")
+                and row[0].strip()
+            )
+            translatable = sum(
+                1
+                for row in section_rows
+                if len(row) > combined_en_idx and row[combined_en_idx].strip() and not row[0].startswith("//")
+            )
+            pending_count = translatable - done_in_file
+            total_pending += pending_count
+            total_done += done_in_file
+            file_stats.append((csv_file, translatable, done_in_file, pending_count))
+
+        write_csv(combined_path, combined_header, combined_rows)
+    else:
+        for csv_file in available:
+            header, rows, pending = collect_entries(csv_file, progress)  # type: ignore
+            zh_idx = header.index("zh") if "zh" in header else -1
+            section_rows = rows
+            done_in_file = sum(
+                1
+                for row in section_rows
+                if zh_idx >= 0
+                and len(row) > zh_idx
+                and row[zh_idx].strip()
+                and not row[0].startswith("//")
+                and row[0].strip()
+            )
+            en_idx = header.index("en")
+            translatable = sum(
+                1
+                for row in section_rows
+                if len(row) > en_idx and row[en_idx].strip() and not row[0].startswith("//")
+            )
+            if done_in_file > 0:
+                write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
+            total_pending += len(pending)
+            total_done += done_in_file
+            file_stats.append((csv_file, translatable, done_in_file, len(pending)))
 
     print(f"Translation status: {total_done} done, {total_pending} pending")
     print()
@@ -624,7 +734,10 @@ def run_translate(
                             print(f"\n  ERROR in translate_batch(): {e}")
                             print("  Saving progress and stopping.")
                             save_progress(progress)
-                            write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
+                            if use_combined:
+                                write_csv(os.path.join(TEXT_DIR, COMBINED_CSV), header, rows)
+                            else:
+                                write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
                             has_error = True
                         break
 
@@ -681,7 +794,10 @@ def run_translate(
         if has_error:
             return
 
-        write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
+        if use_combined:
+            write_csv(os.path.join(TEXT_DIR, COMBINED_CSV), header, rows)
+        else:
+            write_csv(os.path.join(TEXT_DIR, csv_file), header, rows)
         save_progress(progress)
 
     elapsed = time.time() - t_start
@@ -885,28 +1001,51 @@ def run_wrap(
         print(f"Updated {modified_count} entries in {PROGRESS_FILE}")
 
     # Apply wrapped text to CSVs
-    target_files = files if files else CSV_FILES
-    available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
-
-    for csv_file in available:
-        filepath = os.path.join(TEXT_DIR, csv_file)
+    if _has_combined_csv():
+        filepath = os.path.join(TEXT_DIR, COMBINED_CSV)
         header, rows = read_csv(filepath)
-        if "zh" not in header:
-            continue
-        zh_idx = header.index("zh")
-        changed = False
-        for row in rows:
-            while len(row) < len(header):
-                row.append("")
-            key = row[0]
-            full_key = f"{csv_file}::{key}"
-            if full_key in progress and row[zh_idx].strip():
-                if row[zh_idx] != progress[full_key]:
-                    row[zh_idx] = progress[full_key]
-                    changed = True
-        if changed:
-            write_csv(filepath, header, rows)
-            print(f"  Updated {csv_file}")
+        if "zh" in header:
+            zh_idx = header.index("zh")
+            section_starts = _read_combined_section_starts(rows)
+            target_set = set(files) if files else None
+            changed = False
+            for i, row in enumerate(rows):
+                while len(row) < len(header):
+                    row.append("")
+                section = _get_section_for_row(i, section_starts)
+                if target_set and section not in target_set:
+                    continue
+                full_key = f"{section}::{row[0]}"
+                if full_key in progress and row[zh_idx].strip():
+                    if row[zh_idx] != progress[full_key]:
+                        row[zh_idx] = progress[full_key]
+                        changed = True
+            if changed:
+                write_csv(filepath, header, rows)
+                print(f"  Updated {COMBINED_CSV}")
+    else:
+        target_files = files if files else CSV_FILES
+        available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
+
+        for csv_file in available:
+            filepath = os.path.join(TEXT_DIR, csv_file)
+            header, rows = read_csv(filepath)
+            if "zh" not in header:
+                continue
+            zh_idx = header.index("zh")
+            changed = False
+            for row in rows:
+                while len(row) < len(header):
+                    row.append("")
+                key = row[0]
+                full_key = f"{csv_file}::{key}"
+                if full_key in progress and row[zh_idx].strip():
+                    if row[zh_idx] != progress[full_key]:
+                        row[zh_idx] = progress[full_key]
+                        changed = True
+            if changed:
+                write_csv(filepath, header, rows)
+                print(f"  Updated {csv_file}")
 
     print("Done.")
 
@@ -1146,6 +1285,31 @@ def _remove_notes(text: str) -> str:
 
 def _apply_progress_to_csvs(progress: dict, files: list[str] | None = None):
     """Write progress values back to CSV files."""
+    if _has_combined_csv():
+        filepath = os.path.join(TEXT_DIR, COMBINED_CSV)
+        header, rows = read_csv(filepath)
+        if "zh" not in header:
+            return
+        zh_idx = header.index("zh")
+        section_starts = _read_combined_section_starts(rows)
+        target_set = set(files) if files else None
+        changed = False
+        for i, row in enumerate(rows):
+            while len(row) < len(header):
+                row.append("")
+            section = _get_section_for_row(i, section_starts)
+            if target_set and section not in target_set:
+                continue
+            full_key = f"{section}::{row[0]}"
+            if full_key in progress and row[zh_idx].strip():
+                if row[zh_idx] != progress[full_key]:
+                    row[zh_idx] = progress[full_key]
+                    changed = True
+        if changed:
+            write_csv(filepath, header, rows)
+            print(f"  Updated {COMBINED_CSV}")
+        return
+
     target_files = files if files else CSV_FILES
     available = [f for f in target_files if os.path.exists(os.path.join(TEXT_DIR, f))]
     for csv_file in available:

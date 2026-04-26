@@ -16259,5 +16259,15 @@
   "npc_dialog.csv::NPC_TRACY_TRACY_MAX5_5": "[m:spacedout]哔哔 啵啵！种族歧视言论！\n哔哔 啵啵！\n我爱警察！",
   "npc_dialog.csv::NPC_TRACY_TRACY_MAX5_6": "[m:angry]……",
   "events.csv::QEVENT_DEADKING_REW1": "{catname}撕开了悸动之王的胸膛，\n取出了一件传说物品！",
-  "npc_dialog.csv::NPC_BEANIES_BEANIESQUEST_COMPLETE_PRINCESSHAT_5": "[m:happy]很高兴和你做生意！[sfx:PickupCoin][pause:1][sfx:PickupCoin][pause:1][sfx:PickupCoin]"
+  "npc_dialog.csv::NPC_BEANIES_BEANIESQUEST_COMPLETE_PRINCESSHAT_5": "[m:happy]很高兴和你做生意！[sfx:PickupCoin][pause:1][sfx:PickupCoin][pause:1][sfx:PickupCoin]",
+  "abilities.csv::ABILITY_DOUBLE_DESC": "-",
+  "abilities.csv::ABILITY_DOUBLE2_DESC": "-",
+  "additions3.csv::SETTINGS_MAXFRAMERATE_LABEL": "限制帧率",
+  "additions3.csv::SETTINGS_MAXFRAMERATE_OPT_UNCAPPED": "不限制",
+  "weather.csv::KEYWORD_BONUSKNOCKBACK_NAME": "额外击退",
+  "weather.csv::KEYWORD_BONUSKNOCKBACK_DESC": "你造成的击退 +{stacks}。",
+  "weather.csv::KEYWORD_BONUSKNOCKBACKDAMAGE_NAME": "额外击退伤害",
+  "weather.csv::KEYWORD_BONUSKNOCKBACKDAMAGE_DESC": "你造成的击退伤害 +{stacks}。",
+  "weather.csv::ERRORMESSAGE_CORRUPTEDSAVE": "此存档文件已损坏，无法加载。",
+  "weather.csv::ERRORMESSAGE_ERROR": "错误"
 }

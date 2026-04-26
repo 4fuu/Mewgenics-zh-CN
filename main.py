@@ -139,6 +139,35 @@ ZH_LANGUAGE_META = {
 }
 
 
+def _process_csv_file(csv_file, filepath):
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        content = f.read()
+
+    lines = content.split("\n")
+    if not lines:
+        return
+
+    header_line = lines[0]
+    if ",zh" in header_line.lower():
+        print(f"  {csv_file}: 'zh' column already exists, skipping")
+    else:
+        new_lines = []
+        for line in lines:
+            if line.strip() == "":
+                new_lines.append(line)
+            else:
+                new_lines.append(line + ",")
+        new_lines[0] = header_line + ",zh"
+        lines = new_lines
+
+        with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
+            f.write("\n".join(lines))
+
+        print(f"  {csv_file}: added 'zh' column")
+
+    return lines
+
+
 def cmd_add_zh_column():
     if not os.path.exists(TEXT_DIR):
         print(f"Error: {TEXT_DIR} not found. Run 'extract' first.")
@@ -149,32 +178,11 @@ def cmd_add_zh_column():
 
     for csv_file in sorted(csv_files):
         filepath = os.path.join(TEXT_DIR, csv_file)
-        with open(filepath, "r", encoding="utf-8-sig") as f:
-            content = f.read()
-
-        lines = content.split("\n")
-        if not lines:
+        lines = _process_csv_file(csv_file, filepath)
+        if lines is None:
             continue
 
-        header_line = lines[0]
-        if ",zh" in header_line.lower():
-            print(f"  {csv_file}: 'zh' column already exists, skipping")
-        else:
-            new_lines = []
-            for line in lines:
-                if line.strip() == "":
-                    new_lines.append(line)
-                else:
-                    new_lines.append(line + ",")
-            new_lines[0] = header_line + ",zh"
-            lines = new_lines
-
-            with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
-                f.write("\n".join(lines))
-
-            print(f"  {csv_file}: added 'zh' column")
-
-        if csv_file == "additions.csv":
+        if csv_file in ("additions.csv", "combined.csv"):
             _apply_zh_language_meta(filepath, lines)
 
     print("Done. You can now edit the CSV files to add Chinese translations.")
@@ -185,6 +193,7 @@ def _apply_zh_language_meta(filepath, lines):
     import csv as _csv
     import io
 
+    csv_name = os.path.basename(filepath)
     content = "\n".join(lines)
     reader = _csv.reader(io.StringIO(content))
     header = next(reader)
@@ -202,7 +211,7 @@ def _apply_zh_language_meta(filepath, lines):
         key = row[0]
         if key in ZH_LANGUAGE_META and not row[zh_idx].strip():
             row[zh_idx] = ZH_LANGUAGE_META[key]
-            print(f"  additions.csv: set {key} zh = {ZH_LANGUAGE_META[key]}")
+            print(f"  {csv_name}: set {key} zh = {ZH_LANGUAGE_META[key]}")
             changed = True
 
     if changed:

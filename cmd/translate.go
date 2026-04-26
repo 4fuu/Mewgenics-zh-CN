@@ -55,6 +55,90 @@ func cmdApplyTranslations() {
 	}
 	fmt.Printf("已加载 %d 条翻译\n", len(progress))
 
+	combinedPath := filepath.Join(textDir, "combined.csv")
+	if _, err := os.Stat(combinedPath); err == nil {
+		applyCombinedTranslations(combinedPath, progress)
+		return
+	}
+
+	applyIndividualTranslations(progress)
+}
+
+func applyCombinedTranslations(combinedPath string, progress map[string]string) {
+	header, rows, err := readCSV(combinedPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  读取 combined.csv 失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 添加 zh 列
+	zhIdx := indexOf(header, "zh")
+	if zhIdx < 0 {
+		header = append(header, "zh")
+		zhIdx = len(header) - 1
+		for i := range rows {
+			rows[i] = append(rows[i], "")
+		}
+		fmt.Println("  combined.csv: 已添加 zh 列")
+	}
+
+	enIdx := indexOf(header, "en")
+	if enIdx < 0 {
+		fmt.Fprintf(os.Stderr, "  combined.csv: 找不到 en 列\n")
+		os.Exit(1)
+	}
+
+	// 默认 section 为 additions.csv（文件开头、第一个 section marker 之前的行）
+	currentFile := "additions.csv"
+	totalApplied := 0
+	sectionApplied := map[string]int{}
+
+	for i, row := range rows {
+		for len(row) < len(header) {
+			row = append(row, "")
+			rows[i] = row
+		}
+		key := row[0]
+
+		// 检测 section marker: // abilities.csv,,,,,,,,,,,
+		if strings.HasPrefix(key, "// ") && strings.HasSuffix(strings.TrimSpace(key), ".csv") {
+			currentFile = strings.TrimSpace(strings.TrimPrefix(key, "// "))
+			continue
+		}
+
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+
+		// additions.csv 特殊处理：设置语言元数据
+		if currentFile == "additions.csv" {
+			if val, ok := zhLanguageMeta[key]; ok && strings.TrimSpace(rows[i][zhIdx]) == "" {
+				rows[i][zhIdx] = val
+				sectionApplied[currentFile]++
+				totalApplied++
+			}
+		}
+
+		fullKey := currentFile + "::" + key
+		if zh, ok := progress[fullKey]; ok && zh != "" {
+			rows[i][zhIdx] = zh
+			sectionApplied[currentFile]++
+			totalApplied++
+		}
+	}
+
+	if err := writeCSV(combinedPath, header, rows); err != nil {
+		fmt.Fprintf(os.Stderr, "  写入 combined.csv 失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	for section, count := range sectionApplied {
+		fmt.Printf("  %s: 应用了 %d 条翻译\n", section, count)
+	}
+	fmt.Printf("完成。共应用 %d 条翻译\n", totalApplied)
+}
+
+func applyIndividualTranslations(progress map[string]string) {
 	totalApplied := 0
 	for _, csvFile := range csvFiles {
 		fp := filepath.Join(textDir, csvFile)
